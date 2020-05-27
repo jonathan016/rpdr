@@ -1,9 +1,12 @@
-from torch import Tensor
-from torch.nn import Module, Sequential, Conv2d, BatchNorm2d, LeakyReLU, MaxPool2d, Softmax
-
-from models.originals import YOLOv2
+from .originals import YOLOv2
+from .modules.loss_modules import YOLOLossSpecification
 
 
 class RPYOLOv2(YOLOv2):
     def __init__(self):
-        super().__init__(class_count=120, detection_grid_size=(13, 13), bounding_boxes_per_cell=5)
+        # TODO Set anchor_boxes real values
+        anchor_boxes = [1.3221, 1.73145, 3.19275, 4.00944, 5.05587, 8.09892, 9.47112, 4.84053, 11.2364, 10.0071]
+
+        super().__init__(class_count=120, anchor_boxes=anchor_boxes, bounding_boxes_per_cell=5,
+                         spec=YOLOLossSpecification(version=2, num_classes=120, max_object=15,
+                                                    anchor_box_learning_seen_images_limit=12500))

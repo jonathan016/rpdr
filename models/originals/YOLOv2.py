@@ -1,7 +1,10 @@
-from torch import Tensor
-from torch.nn import Module, Sequential, Conv2d, BatchNorm2d, LeakyReLU, MaxPool2d, Softmax
+from typing import Optional, Union
+
+from torch import Tensor, device
+from torch.nn import Module, Sequential, Conv2d, BatchNorm2d, LeakyReLU, MaxPool2d, CrossEntropyLoss
 
 from models.modules import Identity, GlobalAvgPool2d, DetectionAdditionalLayers
+from models.modules.loss_modules import YOLOLossSpecification, YOLOLoss
 
 
 class YOLOv2(Module):
@@ -12,39 +15,67 @@ class YOLOv2(Module):
     YOLOv2.
 
     Two types are available: recognizing and detecting (include recognizing). To set the model to recognizing task,
-    simply call method ``model.recognizing(True)``, and to set the model to detection task call ``model.recognizing(
-    False)``. These invocations will respectively select the model's structure, so no further modifications are
-    required during training or inference. However, note that this class is designed to be used for recognition first
-    then detection, hence changing from detection to recognition after successful training for recognition then
-    detection would require users to ``load_dict`` the model's weight again since the detection layers would be removed.
+    simply call method ``model.recognizing()``, and to set the model to detection task call ``model.detecting()``.
+    These invocations will respectively select the model's structure, so no further modifications are required during
+    training or inference. However, note that this class is designed to be used for recognition first then detection,
+    hence changing from detection to recognition after successful training for recognition then detection would
+    require users to ``load_dict`` the model's weight again since the detection layers would be removed.
 
     The flow of data can be split into two groups, where ``S`` denotes Section, ``P`` denotes Pool, ``pred`` denotes
     predictor, ``lX`` denotes layer_X, ``pass`` denotes passthrough, and ``AX`` denotes activation from layer X:
-        Recognition:
-            S1-P1-S2-P2-S3-P3-S4-P4-S5-P5-S6-pred
-        Detection:
-            S1-P1-S2-P2-S3-P3-S4-P4-S5-P5-S6-l19-l20-pass-l21-pred
-                                     |__(A13)_______|
-    , where A13 is the passthroughed input to passthrough layer, as specified by YOLOv2 config file and its publication.
+        - Recognition::
 
+                S1-P1-S2-P2-S3-P3-S4-P4-S5-P5-S6-pred
+        - Detection::
+
+                S1-P1-S2-P2-S3-P3-S4-P4-S5-P5-S6-l19-l20-pass-l21-pred
+                                         |_____(A13)_____|
+    where A13 is the passthroughed input to passthrough layer, as specified by YOLOv2 config file and its publication.
+
+    To calculate loss, simply call ``model.loss(target).backward()``, since the prediction values are kept after
+    forward pass. Recognizing state means the model will use ``CrossEntropyLoss`` as specified in PJReddie's
+    implementation (https://github.com/pjreddie/darknet) on ``softmax_layer.c``'s ``forward_softmax_layer`` function, in
+    ``softmax_x_ent_cpu`` method call from ``blas.c``, where ``error[i] = (t) ? -log(p) : 0;``. In detecting state,
+    the model will use ``YOLOLoss`` layer - in this case, the ``version=2`` ``YOLOLoss`` layer.
+
+    For using this model in CUDA devices, if possible please **only use the** ``.cuda()`` **method** as it automatically
+    handles ``YOLOLoss`` transfer to CUDA device. If it is not possible, after calling ``.to()`` method, invoke the
+    following: ::
+
+            >>> model.to(cuda_device)   # Primary invocation
+            >>> # Following invocations
+            >>> model.use_cuda = True
+            >>> if model.is_recognizing() is False:
+            >>>     model.predictor.YOLOLoss.set_cuda(True)
 
     Arguments:
         class_count: Specifies the number of classes to be detected and recognized by the model.
-        detection_grid_size: Also known as S in YOLO publications, this argument specifies the grid size measurement.
+        anchor_boxes: Specifies the anchor boxes to be used in prediction, where each entry is a single floating
+            number. If not specified, the anchor boxes are set to YOLOv2's anchor boxes.
         bounding_boxes_per_cell: Also known as B in YOLO publications, this argument specifies how many bounding
-        boxes will be generated per grid cell.
+            boxes will be generated per grid cell.
+        spec: The specification of loss calculation as specified in ``YOLOLoss`` layer. This is later forwarded to
+            the ``YOLOLoss``'s layer, which is selected by the passed ``version`` parameter to ``YOLOLoss`` object.
     """
 
-    def __init__(self, class_count: int, detection_grid_size: tuple = (13, 13), bounding_boxes_per_cell: int = 5):
+    def __init__(self, class_count: int, anchor_boxes: list = None, bounding_boxes_per_cell: int = 5,
+                 spec: YOLOLossSpecification = None):
         super().__init__()
 
         self._is_recognition = True
         self.class_count = class_count
-        self.detection_grid_size = detection_grid_size
         self.bounding_boxes_per_cell = bounding_boxes_per_cell
 
         self.backbone = self._create_backbone()
         self.predictor = self._select_predictor()
+
+        self.loss_function = CrossEntropyLoss(reduction='sum')
+        self.anchor_boxes = anchor_boxes
+        self.spec = spec
+
+        self.use_cuda = False
+
+        self.predictions = None
 
     @staticmethod
     def _validate_create_section_params(in_channels, out_channels):
@@ -131,7 +162,10 @@ class YOLOv2(Module):
                                         padding=0))
             predictor.add_module(f'ActivationPredictor', Identity())
             predictor.add_module('GlobalAveragePooling', GlobalAvgPool2d())
-            predictor.add_module('Softmax', Softmax(dim=1))
+            # No softmax layer is added since CrossEntropyLoss, the used classification loss function, encapsulates
+            # softmax layer in its loss calculation. See https://discuss.pytorch.org/t/vgg-output-layer-no-softmax/9273
+            # for more detail. To get the output with highest value, simply call ``torch.max(output)``, or to get the
+            # index of the output with highest value, call ``output.argmax()``.
         else:
             out_channels = self.bounding_boxes_per_cell * (self.class_count + 5)
             predictor.add_module(f'ConvPredictor',
@@ -142,13 +176,22 @@ class YOLOv2(Module):
     def recognizing(self, is_recognition=True):
         self._is_recognition = is_recognition
 
-        if is_recognition and 'DetectionAdditionalLayers' in self.backbone.__dict__['_modules'].keys():
+        if 'DetectionAdditionalLayers' in self.backbone.__dict__['_modules'].keys():
             self.backbone.__delattr__('DetectionAdditionalLayers')
-        else:
+        elif not is_recognition:
             self.backbone.add_module('DetectionAdditionalLayers',
                                      DetectionAdditionalLayers(self.backbone.Section5.Conv13.out_channels))
 
+        if is_recognition:
+            self.loss_function = CrossEntropyLoss(reduction='sum')
+        else:
+            self.loss_function = YOLOLoss(
+                version=2, anchor_boxes=self.anchor_boxes, use_cuda=self.use_cuda, spec=self.spec)
+
         self.predictor = self._select_predictor()
+
+    def detecting(self):
+        self.recognizing(False)
 
     def forward(self, input: Tensor):
         return self._forward_recognition(input) if self._is_recognition else self._forward_detection(input)
@@ -156,6 +199,7 @@ class YOLOv2(Module):
     def _forward_recognition(self, x):
         out = self.backbone(x)
         out = self.predictor(out)
+        self.predictions = out
         return out
 
     def _forward_detection(self, x):
@@ -173,7 +217,25 @@ class YOLOv2(Module):
         to_concat = self.backbone.Section6(to_concat)
         out = self.backbone.DetectionAdditionalLayers(from_layer_13, to_concat)
         out = self.predictor(out)
+        self.predictions = out
         return out
 
     def is_recognizing(self):
         return self._is_recognition
+
+    def loss(self, target):
+        return self.loss_function(self.predictions, target)
+
+    def cuda(self, device: Optional[Union[int, device]] = ...):
+        cuda_device = super().cuda(device)
+        self.use_cuda = True
+        if not self._is_recognition:
+            self.predictor.YOLOLoss.set_cuda(True)
+        return cuda_device
+
+    def cpu(self):
+        cpu_device = super().cpu()
+        self.use_cuda = False
+        if not self._is_recognition:
+            self.predictor.YOLOLoss.set_cuda(False)
+        return cpu_device
