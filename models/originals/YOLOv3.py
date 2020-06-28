@@ -233,16 +233,54 @@ class YOLOv3(Module):
         return large_predictions, medium_predictions, small_predictions
 
     def _forward_section5(self, x):
-        residual = self.backbone.Section5.initial_block(x)
-        x = self.backbone.Section5(x)
+        x = self.backbone.Section5.initial_block(x)
+        x = self.backbone.Section5.following_blocks[0](x)
+        x = self.backbone.Section5.following_blocks[1](x)
+        x = self.backbone.Section5.following_blocks[2](x)
+        x = self.backbone.Section5.following_blocks[3](x)
+        x = self.backbone.Section5.following_blocks[4](x)
+        x = self.backbone.Section5.following_blocks[5](x)
+        x = self.backbone.Section5.following_blocks[6](x)
 
-        return x, residual
+        from_layer_27 = self._get_layer27_output(x)
+        x = self.backbone.Section5.following_blocks[7](x)
+
+        return x, from_layer_27
+
+    def _get_layer27_output(self, x):
+        from_layer_27 = self.backbone.Section5.following_blocks[7].convs.Conv42(x)
+        from_layer_27 = self.backbone.Section5.following_blocks[7].convs.BatchNorm42(from_layer_27)
+        from_layer_27 = self.backbone.Section5.following_blocks[7].convs.Activation42(from_layer_27)
+        from_layer_27 = self.backbone.Section5.following_blocks[7].convs.Conv43(from_layer_27)
+        from_layer_27 = self.backbone.Section5.following_blocks[7].convs.BatchNorm43(from_layer_27)
+        from_layer_27 = self.backbone.Section5.following_blocks[7].convs.Activation43(from_layer_27)
+
+        return from_layer_27
 
     def _forward_section4(self, x):
-        residual = self.backbone.Section4.initial_block(x)
-        x = self.backbone.Section4(x)
+        x = self.backbone.Section4.initial_block(x)
+        x = self.backbone.Section4.following_blocks[0](x)
+        x = self.backbone.Section4.following_blocks[1](x)
+        x = self.backbone.Section4.following_blocks[2](x)
+        x = self.backbone.Section4.following_blocks[3](x)
+        x = self.backbone.Section4.following_blocks[4](x)
+        x = self.backbone.Section4.following_blocks[5](x)
+        x = self.backbone.Section4.following_blocks[6](x)
 
-        return x, residual
+        from_layer_10 = self._get_layer10_output(x)
+        x = self.backbone.Section4.following_blocks[7](x)
+
+        return x, from_layer_10
+
+    def _get_layer10_output(self, x):
+        from_layer_10 = self.backbone.Section4.following_blocks[7].convs.Conv25(x)
+        from_layer_10 = self.backbone.Section4.following_blocks[7].convs.BatchNorm25(from_layer_10)
+        from_layer_10 = self.backbone.Section4.following_blocks[7].convs.Activation25(from_layer_10)
+        from_layer_10 = self.backbone.Section4.following_blocks[7].convs.Conv26(from_layer_10)
+        from_layer_10 = self.backbone.Section4.following_blocks[7].convs.BatchNorm26(from_layer_10)
+        from_layer_10 = self.backbone.Section4.following_blocks[7].convs.Activation26(from_layer_10)
+
+        return from_layer_10
 
     def _predict_small_objects(self, input, to_concat):
         x = self.predictor.small_predictor.Conv68(input)

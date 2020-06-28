@@ -104,7 +104,8 @@ class TwoConvsBeforeResidual(Module):
     class' implementation. The flow of data can be seen as below: ::
 
             input - Conv1 - Conv2 - (+) - output
-            residual________________/
+                 \__________________/
+                      (residual)
 
     where the ``(+)`` denotes add operation: adding the values without creating new axis or dimension.
     """
@@ -130,8 +131,9 @@ class TwoConvsBeforeResidual(Module):
         self.convs.add_module(f'BatchNorm{index + 1}', BatchNorm2d(num_features=in_channels))
         self.convs.add_module(f'Activation{index + 1}', LeakyReLU(negative_slope=.1, inplace=True))
 
-    def forward(self, input: Tensor, residual:Tensor):
-        output = self.convs(input) + residual
+    def forward(self, input: Tensor):
+        residual = input
+        output = residual + self.convs(input)
         return output
 
 
@@ -184,9 +186,8 @@ class YOLOv3Block(Module):
 
     def forward(self, input: Tensor):
         output = self.initial_block(input)
-        residual = output
 
         for block in self.following_blocks:
-            output = block(output, residual)
+            output = block(output)
 
         return output
