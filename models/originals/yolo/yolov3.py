@@ -1,21 +1,32 @@
 from typing import Optional, Union
 
 from torch import Tensor, device
-from torch.nn import Module, Sequential, Conv2d, BatchNorm2d, LeakyReLU, MaxPool2d, Upsample, CrossEntropyLoss
+from torch.nn import Module, Sequential, Conv2d, BatchNorm2d, LeakyReLU, AdaptiveAvgPool2d, Upsample, CrossEntropyLoss
 
-from .RPYOLOv3 import YOLOv3PredictorConfiguration
-from .modules import YOLOLoss, YOLOLossSpecification, YOLOv3Block, GlobalAvgPool2d, ConcatenatingRoute
+from .loss_modules import YOLOLossSpecification, YOLOLoss
+from .internal_modules import ConcatenatingRoute, YOLOv3Block
 
 
-class MDRY2(Module):
-    """Implementation of M-DRY2 model, the lovechild of YOLOv2 and YOLOv3, with some additions.
+class YOLOv3PredictorConfiguration:
+    """Encapsulates variables for YOLOv3 predictor configuration.
+
+    This class is specifically created to reduce the number of parameters in ``YOLOv3`` constructor while maintaining
+    data type clarity.
+    """
+
+    def __init__(self, anchor_boxes: list, bounding_boxes_per_cell: int = 3, spec: YOLOLossSpecification = None):
+        assert len(anchor_boxes) // spec.anchor_step == bounding_boxes_per_cell
+        self.anchor_boxes = anchor_boxes
+        self.bounding_boxes_per_cell = bounding_boxes_per_cell
+        self.spec = spec
+
+
+class YOLOv3(Module):
+    """Implementation of YOLOv3 model.
 
     Initializing this model would require information regarding available classes in the dataset and how many bounding
     boxes to generate per grid cell (set to default as 3) as specified in YOLOv3 publication since this model is a
-    follows most implementation details of YOLOv3, with exception of its backbone. The backbone is a modified
-    Darknet-53 network, with fewer convolution layers, addition of pooling layers, and skip/residual connections.
-    This is hoped to increase the speed of this YOLOv2-YOLOv3-lovechild model while maintaining its performance in
-    terms of image classification/object detection preciseness (accuracy).
+    direct implementation of YOLOv3.
 
     Two types are available: recognizing and detecting (include recognizing). To set the model to recognizing task,
     simply call method ``model.recognizing()``, and to set the model to detection task call ``model.detecting)``.
@@ -24,23 +35,23 @@ class MDRY2(Module):
     hence changing from detection to recognition after successful training for recognition then detection would
     require users to ``load_dict`` the model's weight again since the detection layers would be removed.
 
-    The flow of data can be split into two groups, where ``S`` denotes Section, ``P`` denotes Pool, ``pred`` denotes
-    predictor, ``AX`` denotes activation from layer X, and ``large_predictor``, ``medium_predictor``,
-    and ``small_predictor`` are the YOLO predictors for detection across scales:
+    The flow of data can be split into two groups, where ``S`` denotes Section, ``pred`` denotes predictor,
+    ``AX`` denotes activation from layer X, and ``large_predictor``, ``medium_predictor``, and ``small_predictor``
+    are the YOLO predictors for detection across scales:
         - Recognition::
 
-                S1-P1-S2-P2-S3-P3-S4-P4-S5-P5-S6-pred
+                S1-S2-S3-S4-S5-S6-pred
         - Detection::
 
-                S1-P1-S2-P2-S3-P3-S4-P4-S5-P5-S6--large_predictor
-                                   |    |       |
-                                   |    |_(A17)_|__________
-                                   |            |          |
-                                   |            |__(A37)__medium_predictor
-                                   |                        |
-                                   |_________(A10)__________|__________
-                                                            |          |
-                                                            |__(A45)__small_predictor
+                S1-S2-S3-S4-S5-S6--large_predictor
+                          | |       |
+                          | |_(A27)_|__________
+                          |         |          |
+                          |         |__(A57)__medium_predictor
+                          |                     |
+                          |______(A10)__________|__________
+                                                |          |
+                                                |__(A65)__small_predictor
 
     To calculate loss, simply call ``model.loss(target).backward()``, since the prediction values are kept after
     forward pass. Recognizing state means the model will use ``CrossEntropyLoss`` as specified in PJReddie's
@@ -69,18 +80,9 @@ class MDRY2(Module):
             boxes will be generated per grid cell.
     """
 
-    # TODO Set anchor_boxes real values for all config
-    def __init__(self, class_count: int = 120,
-                 large_predictor_config: YOLOv3PredictorConfiguration = YOLOv3PredictorConfiguration(
-                     anchor_boxes=[10, 13, 16, 30, 33, 23],
-                     spec=YOLOLossSpecification(version=3, num_classes=120, max_object=15, is_multilabel=False)),
-                 medium_predictor_config: YOLOv3PredictorConfiguration = YOLOv3PredictorConfiguration(
-                     anchor_boxes=[30, 61, 62, 45, 59, 119],
-                     spec=YOLOLossSpecification(version=3, num_classes=120, max_object=15, is_multilabel=False)),
-                 small_predictor_config: YOLOv3PredictorConfiguration = YOLOv3PredictorConfiguration(
-                     anchor_boxes=[116, 90, 156, 198, 373, 326],
-                     spec=YOLOLossSpecification(version=3, num_classes=120, max_object=15, is_multilabel=False)),
-                 bounding_boxes_per_cell: int = 3):
+    def __init__(self, class_count: int, large_predictor_config: YOLOv3PredictorConfiguration,
+                 medium_predictor_config: YOLOv3PredictorConfiguration,
+                 small_predictor_config: YOLOv3PredictorConfiguration, bounding_boxes_per_cell: int = 3):
         super().__init__()
 
         self._is_recognition = True
@@ -116,33 +118,14 @@ class MDRY2(Module):
         section1.add_module('Activation1', LeakyReLU(negative_slope=.1, inplace=True))
 
         backbone.add_module('Section1', section1)
-        backbone.add_module('Pool1', MaxPool2d(kernel_size=2, stride=2))
-
-        section2 = Sequential()
-        section2.add_module('Conv1', Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1))
-        section2.add_module('BatchNorm1', BatchNorm2d(num_features=64))
-        section2.add_module('Activation1', LeakyReLU(negative_slope=.1, inplace=True))
-
-        backbone.add_module('Section2', section2)
-        backbone.add_module('Pool2', MaxPool2d(kernel_size=2, stride=2))
-
-        backbone.add_module('Section3', YOLOv3Block(index=3, in_channels=64, out_channels=128,
-                                                    convs_residual_count=3, initial_block_stride=1))
-        backbone.add_module('Pool3', MaxPool2d(kernel_size=2, stride=2))
-
+        backbone.add_module('Section2', YOLOv3Block(index=2, in_channels=32, out_channels=64, convs_residual_count=1))
+        backbone.add_module('Section3', YOLOv3Block(index=5, in_channels=64, out_channels=128, convs_residual_count=2))
         backbone.add_module('Section4',
-                            YOLOv3Block(index=10, in_channels=128, out_channels=256, convs_residual_count=3,
-                                        initial_block_stride=1))
-        backbone.add_module('Pool4', MaxPool2d(kernel_size=2, stride=2))
-
+                            YOLOv3Block(index=10, in_channels=128, out_channels=256, convs_residual_count=8))
         backbone.add_module('Section5',
-                            YOLOv3Block(index=17, in_channels=256, out_channels=512, convs_residual_count=4,
-                                        initial_block_stride=1))
-        backbone.add_module('Pool5', MaxPool2d(kernel_size=2, stride=2))
-
+                            YOLOv3Block(index=27, in_channels=256, out_channels=512, convs_residual_count=8))
         backbone.add_module('Section6',
-                            YOLOv3Block(index=26, in_channels=512, out_channels=1024, convs_residual_count=3,
-                                        initial_block_stride=1))
+                            YOLOv3Block(index=44, in_channels=512, out_channels=1024, convs_residual_count=4))
 
         return backbone
 
@@ -150,10 +133,13 @@ class MDRY2(Module):
         predictor = Sequential()
 
         if self._is_recognition:
+            # This pooling uses AdaptiveAvgPool2d from PyTorch since YOLOv3 still adds Convolutional Layer after
+            # GlobalAveragePooling, unlike YOLOv2. Therefore the GlobalAvgPool2d class cannot be used as different
+            # tensor shape is produced.
+            predictor.add_module('GlobalAveragePooling', AdaptiveAvgPool2d((1, 1)))
             predictor.add_module(f'ConvPredictor',
-                                 Conv2d(self.backbone.Section6.following_blocks[2].convs.Conv32.out_channels,
+                                 Conv2d(self.backbone.Section6.following_blocks[3].convs.Conv52.out_channels,
                                         self.class_count, kernel_size=1, padding=0))
-            predictor.add_module('GlobalAveragePooling', GlobalAvgPool2d())
             # No softmax layer is added since CrossEntropyLoss, the used classification loss function, encapsulates
             # softmax layer in its loss calculation. See https://discuss.pytorch.org/t/vgg-output-layer-no-softmax/9273
             # for more detail. To get the output with highest value, simply call ``torch.max(output)``, or to get the
@@ -164,9 +150,9 @@ class MDRY2(Module):
         return predictor
 
     def _register_yolo_predictors(self, predictor_container: Sequential):
-        large_predictor = self._create_yolov3_predictor(32, 1024, 'Large')
-        medium_predictor = self._create_yolov3_predictor(40, 512, 'Medium')
-        small_predictor = self._create_yolov3_predictor(48, 256, 'Small')
+        large_predictor = self._create_yolov3_predictor(52, 1024, 'Large')
+        medium_predictor = self._create_yolov3_predictor(60, 512, 'Medium')
+        small_predictor = self._create_yolov3_predictor(68, 256, 'Small')
 
         predictor_container.add_module('large_predictor', large_predictor)
         predictor_container.add_module('medium_predictor', medium_predictor)
@@ -222,128 +208,163 @@ class MDRY2(Module):
     def _forward_recognition(self, x):
         x = self.backbone(x)
         out = self.predictor(x)
+        # Reshapes from Tensor shape of [batch, class_count, 1, 1] to [batch, class_count]
+        out = out.reshape(out.shape[0], out.shape[1])
         self.recognition_prediction = out
         return out
 
     def _forward_detection(self, x):
         x = self.backbone.Section1(x)
-        x = self.backbone.Pool1(x)
         x = self.backbone.Section2(x)
-        x = self.backbone.Pool2(x)
         x = self.backbone.Section3(x)
-        x = self.backbone.Pool3(x)
         x, from_layer_10 = self._forward_section4(x)
-        x = self.backbone.Pool4(x)
-        x, from_layer_17 = self._forward_section5(x)
-        x = self.backbone.Pool5(x)
+        x, from_layer_27 = self._forward_section5(x)
         x = self.backbone.Section6(x)
-        large_predictions, medium_predictions, small_predictions = self._forward_predictors(x, from_layer_17,
+        large_predictions, medium_predictions, small_predictions = self._forward_predictors(x, from_layer_27,
                                                                                             from_layer_10)
 
         return [large_predictions, medium_predictions, small_predictions]
 
-    def _forward_predictors(self, x, from_layer_17, from_layer_10):
-        large_predictions, from_layer_37 = self._predict_large_objects(x)
-        medium_predictions, from_layer_45 = self._predict_medium_objects(from_layer_37, from_layer_17)
-        small_predictions = self._predict_small_objects(from_layer_45, from_layer_10)
+    def _forward_predictors(self, x, from_layer_27, from_layer_10):
+        large_predictions, from_layer_57 = self._predict_large_objects(x)
+        medium_predictions, from_layer_65 = self._predict_medium_objects(from_layer_57, from_layer_27)
+        small_predictions = self._predict_small_objects(from_layer_65, from_layer_10)
 
         return large_predictions, medium_predictions, small_predictions
 
     def _forward_section5(self, x):
-        residual = self.backbone.Section5.initial_block(x)
-        x = self.backbone.Section5(x)
+        x = self.backbone.Section5.initial_block(x)
+        x = self.backbone.Section5.following_blocks[0](x)
+        x = self.backbone.Section5.following_blocks[1](x)
+        x = self.backbone.Section5.following_blocks[2](x)
+        x = self.backbone.Section5.following_blocks[3](x)
+        x = self.backbone.Section5.following_blocks[4](x)
+        x = self.backbone.Section5.following_blocks[5](x)
+        x = self.backbone.Section5.following_blocks[6](x)
 
-        return x, residual
+        from_layer_27 = self._get_layer27_output(x)
+        x = self.backbone.Section5.following_blocks[7](x)
+
+        return x, from_layer_27
+
+    def _get_layer27_output(self, x):
+        from_layer_27 = self.backbone.Section5.following_blocks[7].convs.Conv42(x)
+        from_layer_27 = self.backbone.Section5.following_blocks[7].convs.BatchNorm42(from_layer_27)
+        from_layer_27 = self.backbone.Section5.following_blocks[7].convs.Activation42(from_layer_27)
+        from_layer_27 = self.backbone.Section5.following_blocks[7].convs.Conv43(from_layer_27)
+        from_layer_27 = self.backbone.Section5.following_blocks[7].convs.BatchNorm43(from_layer_27)
+        from_layer_27 = self.backbone.Section5.following_blocks[7].convs.Activation43(from_layer_27)
+
+        return from_layer_27
 
     def _forward_section4(self, x):
-        residual = self.backbone.Section4.initial_block(x)
-        x = self.backbone.Section4(x)
+        x = self.backbone.Section4.initial_block(x)
+        x = self.backbone.Section4.following_blocks[0](x)
+        x = self.backbone.Section4.following_blocks[1](x)
+        x = self.backbone.Section4.following_blocks[2](x)
+        x = self.backbone.Section4.following_blocks[3](x)
+        x = self.backbone.Section4.following_blocks[4](x)
+        x = self.backbone.Section4.following_blocks[5](x)
+        x = self.backbone.Section4.following_blocks[6](x)
 
-        return x, residual
+        from_layer_10 = self._get_layer10_output(x)
+        x = self.backbone.Section4.following_blocks[7](x)
+
+        return x, from_layer_10
+
+    def _get_layer10_output(self, x):
+        from_layer_10 = self.backbone.Section4.following_blocks[7].convs.Conv25(x)
+        from_layer_10 = self.backbone.Section4.following_blocks[7].convs.BatchNorm25(from_layer_10)
+        from_layer_10 = self.backbone.Section4.following_blocks[7].convs.Activation25(from_layer_10)
+        from_layer_10 = self.backbone.Section4.following_blocks[7].convs.Conv26(from_layer_10)
+        from_layer_10 = self.backbone.Section4.following_blocks[7].convs.BatchNorm26(from_layer_10)
+        from_layer_10 = self.backbone.Section4.following_blocks[7].convs.Activation26(from_layer_10)
+
+        return from_layer_10
 
     def _predict_small_objects(self, input, to_concat):
-        x = self.predictor.small_predictor.Conv48(input)
-        x = self.predictor.small_predictor.BatchNorm48(x)
-        x = self.predictor.small_predictor.Activation48(x)
+        x = self.predictor.small_predictor.Conv68(input)
+        x = self.predictor.small_predictor.BatchNorm68(x)
+        x = self.predictor.small_predictor.Activation68(x)
         x = self.predictor.small_predictor.Upsample(x)
         x = self.predictor.small_predictor.Concatenate(x, to_concat)
-        x = self.predictor.small_predictor.Conv49(x)
-        x = self.predictor.small_predictor.BatchNorm49(x)
-        x = self.predictor.small_predictor.Activation49(x)
-        x = self.predictor.small_predictor.Conv50(x)
-        x = self.predictor.small_predictor.BatchNorm50(x)
-        x = self.predictor.small_predictor.Activation50(x)
-        x = self.predictor.small_predictor.Conv51(x)
-        x = self.predictor.small_predictor.BatchNorm51(x)
-        x = self.predictor.small_predictor.Activation51(x)
-        x = self.predictor.small_predictor.Conv52(x)
-        x = self.predictor.small_predictor.BatchNorm52(x)
-        x = self.predictor.small_predictor.Activation52(x)
-        x = self.predictor.small_predictor.Conv53(x)
-        x = self.predictor.small_predictor.BatchNorm53(x)
-        x = self.predictor.small_predictor.Activation53(x)
-        x = self.predictor.small_predictor.Conv54(x)
-        x = self.predictor.small_predictor.BatchNorm54(x)
-        x = self.predictor.small_predictor.Activation54(x)
-        x = self.predictor.small_predictor.Conv55(x)
+        x = self.predictor.small_predictor.Conv69(x)
+        x = self.predictor.small_predictor.BatchNorm69(x)
+        x = self.predictor.small_predictor.Activation69(x)
+        x = self.predictor.small_predictor.Conv70(x)
+        x = self.predictor.small_predictor.BatchNorm70(x)
+        x = self.predictor.small_predictor.Activation70(x)
+        x = self.predictor.small_predictor.Conv71(x)
+        x = self.predictor.small_predictor.BatchNorm71(x)
+        x = self.predictor.small_predictor.Activation71(x)
+        x = self.predictor.small_predictor.Conv72(x)
+        x = self.predictor.small_predictor.BatchNorm72(x)
+        x = self.predictor.small_predictor.Activation72(x)
+        x = self.predictor.small_predictor.Conv73(x)
+        x = self.predictor.small_predictor.BatchNorm73(x)
+        x = self.predictor.small_predictor.Activation73(x)
+        x = self.predictor.small_predictor.Conv74(x)
+        x = self.predictor.small_predictor.BatchNorm74(x)
+        x = self.predictor.small_predictor.Activation74(x)
+        x = self.predictor.small_predictor.Conv75(x)
         self.small_predictions = x
 
         return x
 
     def _predict_medium_objects(self, input, to_concat):
-        x = self.predictor.medium_predictor.Conv40(input)
-        x = self.predictor.medium_predictor.BatchNorm40(x)
-        x = self.predictor.medium_predictor.Activation40(x)
+        x = self.predictor.medium_predictor.Conv60(input)
+        x = self.predictor.medium_predictor.BatchNorm60(x)
+        x = self.predictor.medium_predictor.Activation60(x)
         x = self.predictor.medium_predictor.Upsample(x)
         x = self.predictor.medium_predictor.Concatenate(x, to_concat)
-        x = self.predictor.medium_predictor.Conv41(x)
-        x = self.predictor.medium_predictor.BatchNorm41(x)
-        x = self.predictor.medium_predictor.Activation41(x)
-        x = self.predictor.medium_predictor.Conv42(x)
-        x = self.predictor.medium_predictor.BatchNorm42(x)
-        x = self.predictor.medium_predictor.Activation42(x)
-        x = self.predictor.medium_predictor.Conv43(x)
-        x = self.predictor.medium_predictor.BatchNorm43(x)
-        x = self.predictor.medium_predictor.Activation43(x)
-        x = self.predictor.medium_predictor.Conv44(x)
-        x = self.predictor.medium_predictor.BatchNorm44(x)
-        x = self.predictor.medium_predictor.Activation44(x)
-        x = self.predictor.medium_predictor.Conv45(x)
-        x = self.predictor.medium_predictor.BatchNorm45(x)
-        x = self.predictor.medium_predictor.Activation45(x)
-        from_layer_45 = x
-        x = self.predictor.medium_predictor.Conv46(x)
-        x = self.predictor.medium_predictor.BatchNorm46(x)
-        x = self.predictor.medium_predictor.Activation46(x)
-        x = self.predictor.medium_predictor.Conv47(x)
+        x = self.predictor.medium_predictor.Conv61(x)
+        x = self.predictor.medium_predictor.BatchNorm61(x)
+        x = self.predictor.medium_predictor.Activation61(x)
+        x = self.predictor.medium_predictor.Conv62(x)
+        x = self.predictor.medium_predictor.BatchNorm62(x)
+        x = self.predictor.medium_predictor.Activation62(x)
+        x = self.predictor.medium_predictor.Conv63(x)
+        x = self.predictor.medium_predictor.BatchNorm63(x)
+        x = self.predictor.medium_predictor.Activation63(x)
+        x = self.predictor.medium_predictor.Conv64(x)
+        x = self.predictor.medium_predictor.BatchNorm64(x)
+        x = self.predictor.medium_predictor.Activation64(x)
+        x = self.predictor.medium_predictor.Conv65(x)
+        x = self.predictor.medium_predictor.BatchNorm65(x)
+        x = self.predictor.medium_predictor.Activation65(x)
+        from_layer_65 = x
+        x = self.predictor.medium_predictor.Conv66(x)
+        x = self.predictor.medium_predictor.BatchNorm66(x)
+        x = self.predictor.medium_predictor.Activation66(x)
+        x = self.predictor.medium_predictor.Conv67(x)
         self.medium_predictions = x
 
-        return x, from_layer_45
+        return x, from_layer_65
 
     def _predict_large_objects(self, x):
-        x = self.predictor.large_predictor.Conv33(x)
-        x = self.predictor.large_predictor.BatchNorm33(x)
-        x = self.predictor.large_predictor.Activation33(x)
-        x = self.predictor.large_predictor.Conv34(x)
-        x = self.predictor.large_predictor.BatchNorm34(x)
-        x = self.predictor.large_predictor.Activation34(x)
-        x = self.predictor.large_predictor.Conv35(x)
-        x = self.predictor.large_predictor.BatchNorm35(x)
-        x = self.predictor.large_predictor.Activation35(x)
-        x = self.predictor.large_predictor.Conv36(x)
-        x = self.predictor.large_predictor.BatchNorm36(x)
-        x = self.predictor.large_predictor.Activation36(x)
-        x = self.predictor.large_predictor.Conv37(x)
-        x = self.predictor.large_predictor.BatchNorm37(x)
-        x = self.predictor.large_predictor.Activation37(x)
-        from_layer_37 = x
-        x = self.predictor.large_predictor.Conv38(x)
-        x = self.predictor.large_predictor.BatchNorm38(x)
-        x = self.predictor.large_predictor.Activation38(x)
-        x = self.predictor.large_predictor.Conv39(x)
+        x = self.predictor.large_predictor.Conv53(x)
+        x = self.predictor.large_predictor.BatchNorm53(x)
+        x = self.predictor.large_predictor.Activation53(x)
+        x = self.predictor.large_predictor.Conv54(x)
+        x = self.predictor.large_predictor.BatchNorm54(x)
+        x = self.predictor.large_predictor.Activation54(x)
+        x = self.predictor.large_predictor.Conv55(x)
+        x = self.predictor.large_predictor.BatchNorm55(x)
+        x = self.predictor.large_predictor.Activation55(x)
+        x = self.predictor.large_predictor.Conv56(x)
+        x = self.predictor.large_predictor.BatchNorm56(x)
+        x = self.predictor.large_predictor.Activation56(x)
+        x = self.predictor.large_predictor.Conv57(x)
+        x = self.predictor.large_predictor.BatchNorm57(x)
+        x = self.predictor.large_predictor.Activation57(x)
+        from_layer_57 = x
+        x = self.predictor.large_predictor.Conv58(x)
+        x = self.predictor.large_predictor.BatchNorm58(x)
+        x = self.predictor.large_predictor.Activation58(x)
+        x = self.predictor.large_predictor.Conv59(x)
         self.large_predictions = x
 
-        return x, from_layer_37
+        return x, from_layer_57
 
     def is_recognizing(self):
         return self._is_recognition

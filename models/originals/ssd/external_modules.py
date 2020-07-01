@@ -1,90 +1,18 @@
-from torch import Tensor, cat as torch_cat, arange as torch_arange, max as torch_max, min as torch_min, \
-    clamp as torch_clamp, exp as torch_exp
+from torch import arange as torch_arange, cat as torch_cat, exp as torch_exp, max as torch_max, min as torch_min, \
+    clamp as torch_clamp
 from torch.nn import Module, Conv2d, MaxPool2d, functional as F
-from torch.nn.functional import avg_pool2d as torch_avg_pool2d
 from torch.nn.init import xavier_uniform_ as torch_nn_xavier_uniform, constant_ as torch_nn_constant
 from torchvision.models import vgg16 as torchvision_vgg16
 
-
-class Identity(Module):
-    """Identity activation due to unavailability in this project's PyTorch version.
-
-    This is implemented as shown in https://github.com/pytorch/pytorch/pull/19249 by @MilesCranmer. All credits to
-    @MilesCranmer.
-    """
-
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, input):
-        return input
-
-
-class Reorg(Module):
-    """Reorg layer as used in YOLOv2 rewrite in PyTorch.
-
-    This is implemented as shown in https://github.com/marvis/pytorch-yolo2. Modifications are made for variable
-    names only. All credits to @marvis.
-    """
-
-    def __init__(self, stride=2):
-        super(Reorg, self).__init__()
-        self.stride = stride
-
-    def forward(self, input_feature_map: Tensor):
-        assert (input_feature_map.data.dim() == 4)
-        batch = input_feature_map.data.size(0)
-        channels = input_feature_map.data.size(1)
-        height = input_feature_map.data.size(2)
-        width = input_feature_map.data.size(3)
-
-        assert (height % self.stride == 0)
-        assert (width % self.stride == 0)
-        width_stride = self.stride
-        height_stride = self.stride
-
-        output_height = int(height / height_stride)
-        output_width = int(width / width_stride)
-        output_feature_map = input_feature_map.view(batch, channels, output_height, height_stride, output_width,
-                                                    width_stride).transpose(3, 4).contiguous()
-        output_feature_map = output_feature_map.view(batch, channels, output_height * output_width,
-                                                     height_stride * width_stride).transpose(2, 3).contiguous()
-        output_feature_map = output_feature_map.view(batch, channels, height_stride * width_stride, output_height,
-                                                     output_width).transpose(1, 2).contiguous()
-        output_feature_map = output_feature_map.view(batch, height_stride * width_stride * channels, output_height,
-                                                     output_width)
-
-        return output_feature_map
-
-
-class GlobalAvgPool2d(Module):
-    """GlobalAvgPool2d layer as used in YOLOv2 rewrite in PyTorch.
-
-    This is implemented as shown in https://github.com/marvis/pytorch-yolo2. Modifications are made for variable
-    names only. All credits to @marvis.
-    """
-
-    def __init__(self):
-        super(GlobalAvgPool2d, self).__init__()
-
-    def forward(self, input: Tensor):
-        batch = input.data.size(0)
-        channels = input.data.size(1)
-        height = input.data.size(2)
-        width = input.data.size(3)
-
-        output = torch_avg_pool2d(input, (height, width))
-        output = output.view(batch, channels)
-
-        return output
+from models.originals.ssd.internal_modules import PriorBoxesConfig
 
 
 def _decimate(tensor, m):
     """Decimate a tensor by factor m to convert fully connected layers to equivalent convolutional layers as used in
     SSD rewrite in PyTorch.
 
-    This is implemented as shown in https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection. Modifications
-    are made for variable names only. All credits to @sgrvinod.
+    This is implemented as shown in https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection. Some
+    modifications are made. All credits to @sgrvinod.
     """
 
     assert tensor.dim() == len(m)
@@ -99,8 +27,8 @@ def _decimate(tensor, m):
 def cxcy_to_xy(cxcy):
     """Calculation of boundary coordinates calculation from center-size coordinates as used in SSD rewrite in PyTorch.
 
-    This is implemented as shown in https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection. Modifications
-    are made for variable names only. All credits to @sgrvinod.
+    This is implemented as shown in https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection. Some
+    modifications are made. All credits to @sgrvinod.
     """
 
     return torch_cat([cxcy[:, :2] - (cxcy[:, 2:] / 2), cxcy[:, :2] + (cxcy[:, 2:] / 2)], 1)
@@ -110,8 +38,8 @@ def gcxgcy_to_cxcy(gcxgcy, priors_cxcy):
     """Decodes bounding boxes from the corresponding prior boxes, both in center-size coordinates form, as used in SSD
     rewrite in PyTorch.
 
-    This is implemented as shown in https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection. Modifications
-    are made for variable names only. All credits to @sgrvinod.
+    This is implemented as shown in https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection. Some 
+    modifications are made. All credits to @sgrvinod.
     """
 
     return torch_cat([gcxgcy[:, :2] * priors_cxcy[:, 2:] / 10 + priors_cxcy[:, :2],
@@ -122,8 +50,8 @@ def _find_intersection(set1, set2):
     """Calculation of intersection of every box combination between two sets of boxes that are in boundary
     coordinates as used in SSD rewrite in PyTorch.
 
-    This is implemented as shown in https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection. Modifications
-    are made for variable names only. All credits to @sgrvinod.
+    This is implemented as shown in https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection. Some 
+    modifications are made. All credits to @sgrvinod.
     """
 
     lower_bounds = torch_max(set1[:, :2].unsqueeze(1), set2[:, :2].unsqueeze(0))
@@ -138,8 +66,8 @@ def find_jaccard_overlap(set1, set2):
     """Calculation of Jaccard Overlap (IoU) of every box combination between two sets of boxes that are in boundary
     coordinates as used in SSD rewrite in PyTorch.
 
-    This is implemented as shown in https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection. Modifications
-    are made for variable names only. All credits to @sgrvinod.
+    This is implemented as shown in https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection. Some 
+    modifications are made. All credits to @sgrvinod.
     """
 
     intersection = _find_intersection(set1, set2)
@@ -155,8 +83,8 @@ def find_jaccard_overlap(set1, set2):
 class VGGBase(Module):
     """VGG base model as used by SSD for extracting features.
 
-    This is implemented as shown in https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection. Modifications
-    are made for variable names only. All credits to @sgrvinod.
+    This is implemented as shown in https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection. Some 
+    modifications are made. All credits to @sgrvinod.
     """
 
     def __init__(self, load_pretrained=True):
@@ -247,8 +175,8 @@ class VGGBase(Module):
 class AuxiliaryConvolutions(Module):
     """Auxiliary convolutions as used by SSD.
 
-    This is implemented as shown in https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection. Modifications
-    are made for variable names only. All credits to @sgrvinod.
+    This is implemented as shown in https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection. Some 
+    modifications are made. All credits to @sgrvinod.
     """
 
     def __init__(self):
@@ -296,58 +224,9 @@ class AuxiliaryConvolutions(Module):
 class PredictionConvolutions(Module):
     """Final predictor convolutions as used by SSD after the auxiliary convolutions.
 
-    This is implemented as shown in https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection. Modifications
-    are made for variable names only. All credits to @sgrvinod.
+    This is implemented as shown in https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection. Some 
+    modifications are made. All credits to @sgrvinod.
     """
-
-    class PriorBoxesConfig:
-        def __init__(self, config: dict = None):
-            self.__config = {'conv4_3': 4,
-                             'conv7': 6,
-                             'conv8_2': 6,
-                             'conv9_2': 6,
-                             'conv10_2': 4,
-                             'conv11_2': 4}
-
-            if config: self.set_config(config)
-
-        def set_config(self, config: dict):
-            assert config.keys() == self.__config.keys()
-
-            self.__config = config
-
-        def value(self):
-            return self.__config
-
-        def conv4_3(self, num_boxes):
-            self.__config['conv4_3'] = num_boxes
-
-            return self
-
-        def conv7(self, num_boxes):
-            self.__config['conv7'] = num_boxes
-
-            return self
-
-        def conv8_2(self, num_boxes):
-            self.__config['conv8_2'] = num_boxes
-
-            return self
-
-        def conv9_2(self, num_boxes):
-            self.__config['conv9_2'] = num_boxes
-
-            return self
-
-        def conv10_2(self, num_boxes):
-            self.__config['conv10_2'] = num_boxes
-
-            return self
-
-        def conv11_2(self, num_boxes):
-            self.__config['conv11_2'] = num_boxes
-
-            return self
 
     def __init__(self, num_classes, prior_boxes: PriorBoxesConfig):
         super(PredictionConvolutions, self).__init__()

@@ -4,18 +4,42 @@ from torch.nn import Module, Parameter, functional as F
 from torch.nn.init import constant_ as torch_nn_constant
 from math import sqrt as math_sqrt
 
-from models.modules.external_modules import VGGBase, AuxiliaryConvolutions, PredictionConvolutions, cxcy_to_xy, \
-    gcxgcy_to_cxcy, find_jaccard_overlap
+from .external_modules import cxcy_to_xy, gcxgcy_to_cxcy, find_jaccard_overlap, VGGBase, AuxiliaryConvolutions, \
+    PredictionConvolutions
+from .internal_modules import PriorBoxesConfig
+from .loss_modules import MultiBoxLoss
 
 
 class SSD300(Module):
     """SSD300 rewrite in PyTorch.
 
-    This is implemented as shown in https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection. Modifications
-    are made for variable names only. All credits to @sgrvinod.
+    This is implemented as shown in https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection. Some
+    modifications are made. All credits to @sgrvinod.
+
+    The main modification made in this implementation is for the loss calculation, in which rather than creating the
+    loss object outside this model's implementation, the loss object is automatically created when instantiating this
+    class. To calculate loss, simply call ``model.loss(target).backward()``, since the prediction values are kept after
+    forward pass.
+
+    However, SSD accepts two target values, which are the **ground truth locations** and the **ground truth classes
+    scores** as specified in ``GroZiDetectionDataset._format_ssd()`` method. Therefore, to calculate the loss,
+    one can do the following: ::
+
+            >>> model = SSD300(**constructor_args)
+            >>> for data, *target in ssd_dataset:
+            >>>     predicted_locations, predicted_classes_scores = model(data)
+            >>>     loss = model.loss(*target)
+            >>>     loss.backward()
+
+    Arguments:
+        num_classes: The number of possible known objects to detect and recognize.
+        load_pretrained_base: A flag denoting whether to load pretrained base network (VGG-16) weights or not.
+        prior_boxes: The configuration of number of prior boxes per detection layer in SSD.
+        aspect_ratios: The configuration of aspect ratios to be used in the prior boxes construction.
     """
 
-    def __init__(self, num_classes, load_pretrained_base=True, prior_boxes=PredictionConvolutions.PriorBoxesConfig()):
+    def __init__(self, num_classes, load_pretrained_base=True, prior_boxes=PriorBoxesConfig(),
+                 aspect_ratios=PriorBoxesConfig()):
         super(SSD300, self).__init__()
 
         self.is_cuda = False
@@ -29,7 +53,11 @@ class SSD300(Module):
         self.rescale_factors = Parameter(FloatTensor(1, 512, 1, 1))
         torch_nn_constant(self.rescale_factors, 20)
 
-        self.priors_cxcy = self.create_prior_boxes()
+        self.priors_cxcy = self.create_prior_boxes(aspect_ratios.value())
+
+        self.predicted_locations = None
+        self.predicted_classes_scores = None
+        self.loss_function = MultiBoxLoss(self.priors_cxcy)
 
     def _get_device(self):
         return torch_device("cuda" if self.is_cuda else "cpu")
@@ -41,19 +69,20 @@ class SSD300(Module):
         conv4_3_feats, conv7_feats = self._base_predict(image)
         conv8_2_feats, conv9_2_feats, conv10_2_feats, conv11_2_feats = self.aux_convs(conv7_feats)
 
-        locations, classes_scores = self.pred_convs(
+        self.predicted_locations, self.predicted_classes_scores = self.pred_convs(
             conv4_3_feats, conv7_feats, conv8_2_feats, conv9_2_feats, conv10_2_feats, conv11_2_feats)
 
-        return locations, classes_scores
+        return self.predicted_locations, self.predicted_classes_scores
 
     def _base_predict(self, image):
         conv4_3_feats, conv7_feats = self.base(image)
         norm = conv4_3_feats.pow(2).sum(dim=1, keepdim=True).sqrt()
         conv4_3_feats = conv4_3_feats / norm
         conv4_3_feats = conv4_3_feats * self.rescale_factors
+
         return conv4_3_feats, conv7_feats
 
-    def create_prior_boxes(self):
+    def create_prior_boxes(self, aspect_ratios):
         feature_map_dimensions = {'conv4_3': 38,
                                   'conv7': 19,
                                   'conv8_2': 10,
@@ -67,13 +96,6 @@ class SSD300(Module):
                       'conv9_2': 0.55,
                       'conv10_2': 0.725,
                       'conv11_2': 0.9}
-
-        aspect_ratios = {'conv4_3': [1., 2., 0.5],
-                         'conv7': [1., 2., 3., 0.5, .333],
-                         'conv8_2': [1., 2., 3., 0.5, .333],
-                         'conv9_2': [1., 2., 3., 0.5, .333],
-                         'conv10_2': [1., 2., 0.5],
-                         'conv11_2': [1., 2., 0.5]}
 
         feature_maps = list(feature_map_dimensions.keys())
 
@@ -100,6 +122,13 @@ class SSD300(Module):
         prior_boxes.clamp_(0, 1)
 
         return prior_boxes
+
+    def loss(self, *target):
+        target_locations = target[0]
+        target_classes_scores = target[1]
+
+        return self.loss_function(
+            self.predicted_locations, self.predicted_classes_scores, target_locations, target_classes_scores)
 
     def detect_objects(self, predicted_locs, predicted_scores, min_score, max_overlap, top_k):
         batch_size = predicted_locs.size(0)

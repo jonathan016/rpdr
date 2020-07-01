@@ -3,8 +3,9 @@ from typing import Optional, Union
 from torch import Tensor, device
 from torch.nn import Module, Sequential, Conv2d, BatchNorm2d, LeakyReLU, MaxPool2d, CrossEntropyLoss
 
-from models.modules import Identity, GlobalAvgPool2d, DetectionAdditionalLayers
-from models.modules.loss_modules import YOLOLossSpecification, YOLOLoss
+from .external_modules import Identity, GlobalAvgPool2d
+from .internal_modules import DetectionAdditionalLayers
+from .loss_modules import YOLOLossSpecification, YOLOLoss
 
 
 class YOLOv2(Module):
@@ -46,7 +47,7 @@ class YOLOv2(Module):
             >>> # Following invocations
             >>> model.use_cuda = True
             >>> if model.is_recognizing() is False:
-            >>>     model.predictor.YOLOLoss.set_cuda(True)
+            >>>     model.loss_function.set_cuda(True)
 
     Arguments:
         class_count: Specifies the number of classes to be detected and recognized by the model.
@@ -230,12 +231,12 @@ class YOLOv2(Module):
         cuda_device = super().cuda(device)
         self.use_cuda = True
         if not self._is_recognition:
-            self.predictor.YOLOLoss.set_cuda(True)
+            self.loss_function.set_cuda(True)
         return cuda_device
 
     def cpu(self):
         cpu_device = super().cpu()
         self.use_cuda = False
         if not self._is_recognition:
-            self.predictor.YOLOLoss.set_cuda(False)
+            self.loss_function.set_cuda(False)
         return cpu_device

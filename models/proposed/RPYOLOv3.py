@@ -1,5 +1,5 @@
-from .originals import YOLOv3, YOLOv3PredictorConfiguration
-from .modules.loss_modules import YOLOLossSpecification
+from models.originals import YOLOv3, YOLOv3PredictorConfiguration
+from models import YOLOLossSpecification
 
 
 class RPYOLOv3(YOLOv3):

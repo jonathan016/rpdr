@@ -8,20 +8,55 @@ from utils.datasets.yolo_augmentation import augment_data
 
 
 class GroZiDetectionDataset(ImageFolder):
+    """Encapsulates GroZi-120 dataset with combined zoom out augmentation as proposed in this project's proposal.
+
+    This dataset wrapper is usable for SSD and YOLO (v2 and v3) models only for now. After selecting
+    ``max_data_in_combined`` individual product images, the selected images are combined with combined zoom out
+    augmentation and later formatted to this dataset's specified model's format.
+
+    Arguments:
+        root (string): Root folder of the individual product images.
+        transform (callable, optional): Transformations from ``torchvision.transforms`` module to be applied to each
+            individual product images prior to combining.
+        target_transform (callable, optional): Not directly used, but will be used by ``ImageFolder``'s
+            implementation to transform the target values of the dataset.
+        loader (callable, optional): A function to load an image given its path.
+        is_valid_file (callable, optional): A function that takes path of an ``Image`` file
+            and check if the file is a valid_file (used to check of corrupt files).
+        transform_to_tensor (bool, optional): A flag to denote whether the combined image should be converted to
+            tensor or not.
+        min_resize (int, optional): The minimum resize width/height of each individual product image.
+        max_resize (int, optional): The maximum resize width/height of each individual product image.
+        combined_transform (callable, optional): Transformations from ``imgaug.augmenters`` module to be applied
+            to the combined image.
+        max_data_usage (int, optional): Maximum individual product image usage in the combined zoom out augmentation
+            technique.
+        max_data_in_combined (int, optional): Maximum present individual product image in the combined image.
+        max_object (int, optional): Number of possible objects in the dataset. Only to be specified if ``model`` is
+            ``GroZiDetectionDataset.YOLO``.
+        seen_images (int, optional): Number of seen images of the YOLO model. Useful for changing image size (
+            multi-scale training) for YOLO models. Only to be specified if ``model`` is ``GroZiDetectionDataset.YOLO``.
+        batch_size (int, optional): Batch size of training data. Useful for changing image size (
+            multi-scale training) for YOLO models. Only to be specified if ``model`` is ``GroZiDetectionDataset.YOLO``.
+    """
     SSD: str = 'SSD'
     YOLO: str = 'YOLO'
 
     def __init__(self, root, model: str = SSD, transform=None, target_transform=None, loader=default_loader,
                  is_valid_file=None, transform_to_tensor: bool = True, min_resize: int = None, max_resize: int = None,
                  combined_transform=None, max_data_usage: int = 1, max_data_in_combined: int = 1,
-                 max_object: int = None):
+                 max_object: int = None, seen_images: int = 0, batch_size: int = None):
         super().__init__(root, transform, target_transform, loader, is_valid_file)
 
         assert model == self.YOLO or model == self.SSD
         self.model = model
         if self.model == self.YOLO:
-            assert max_object is not None
+            assert max_object is not None and max_object > 0
+            assert seen_images is not None and seen_images >= 0
+            assert batch_size is not None and batch_size > 0
             self.max_object = max_object
+            self.seen_images = seen_images
+            self.batch_size = batch_size
 
         self.max_data_usage = max_data_usage
         self.max_data_in_combined = max_data_in_combined
@@ -82,7 +117,23 @@ class GroZiDetectionDataset(ImageFolder):
             cx, cy, w, h = GroZiDetectionDataset._get_center_size_coordinates(bounding_boxes[i], combined_image.size)
             yolo_labels.append([int(labels[i]), cx, cy, w, h])
 
-        return augment_data(combined_image, self.max_object, yolo_labels, combined_image.size, .2, .1, 1.5, 1.5)
+        shape = self._get_shape_for_multi_scale_training()
+
+        return augment_data(combined_image, self.max_object, yolo_labels, shape, .2, .1, 1.5, 1.5)
+
+    def _get_shape_for_multi_scale_training(self):
+        if self.seen_images < (4000 * self.batch_size):
+            resolution = 416
+        elif self.seen_images < (8000 * self.batch_size):
+            resolution = (randint(0, 3) + 13) * 32
+        elif self.seen_images < (12000 * self.batch_size):
+            resolution = (randint(0, 5) + 12) * 32
+        elif self.seen_images < (16000 * self.batch_size):
+            resolution = (randint(0, 7) + 11) * 32
+        else:
+            resolution = (randint(0, 9) + 10) * 32
+
+        return resolution, resolution
 
     @staticmethod
     def _get_center_size_coordinates(bounding_boxes, image_size):
@@ -117,10 +168,10 @@ class GroZiDetectionDataset(ImageFolder):
 
 
 def ssd_collate(batch):
-    """DataLoader collation function for batch_size larger than 1.
+    """``DataLoader`` collation function for ``batch_size`` larger than 1.
 
-    This is implemented as shown in https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection. Modifications
-    are made for variable names only. All credits to @sgrvinod.
+    This is implemented as shown in https://github.com/sgrvinod/a-PyTorch-Tutorial-to-Object-Detection. Some
+    modifications are made. All credits to @sgrvinod.
     """
 
     images = list()

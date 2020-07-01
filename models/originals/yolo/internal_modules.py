@@ -1,7 +1,18 @@
-from torch import Tensor, cat as torch_concat_tensor
+from torch import cat as torch_concat_tensor, Tensor
 from torch.nn import Module, Conv2d, Sequential, BatchNorm2d, LeakyReLU
 
-from .external_modules import Reorg
+from .external_modules import Reorg, _bbox_ious, _bbox_iou
+
+
+def intersection_over_union(many, first, second, is_corner_coordinates):
+    """Handles intersection over union (IoU) calculation for YOLO models.
+
+    This method hides the compuutation of IoU for either many predictions and ground truths or one prediction and
+    ground truth.
+    """
+    if many:
+        return _bbox_ious(first, second, is_corner_coordinates)
+    return _bbox_iou(first, second, is_corner_coordinates)
 
 
 class ConcatenatingRoute(Module):

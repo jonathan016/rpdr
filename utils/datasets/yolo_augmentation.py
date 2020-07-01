@@ -5,8 +5,8 @@ from PIL import Image
 
 """Augmentation techniques as used in YOLOv2 rewrite in PyTorch.
 
-This is implemented as shown in https://github.com/marvis/pytorch-yolo2. Modifications are made for variable
-names only. All credits to @marvis.
+This is implemented as shown in https://github.com/marvis/pytorch-yolo2. Some modifications are made. All credits to 
+@marvis.
 """
 
 
