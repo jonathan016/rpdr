@@ -91,15 +91,17 @@ class YOLOv3(Module):
 
         self.use_cuda = False
 
+        num_backbone_sections = 6
+        downsample_ratio = 2 ** num_backbone_sections
         self.large_predictor_loss = YOLOLoss(
             version=3, anchor_boxes=large_predictor_config.anchor_boxes, use_cuda=self.use_cuda,
-            spec=large_predictor_config.spec, v3type='Large')
+            spec=large_predictor_config.spec, v3type=YOLOLoss.V3LARGE, downsample_ratio=downsample_ratio // (2 ** 1))
         self.medium_predictor_loss = YOLOLoss(
             version=3, anchor_boxes=medium_predictor_config.anchor_boxes, use_cuda=self.use_cuda,
-            spec=medium_predictor_config.spec, v3type='Medium')
+            spec=medium_predictor_config.spec, v3type=YOLOLoss.V3MEDIUM, downsample_ratio=downsample_ratio // (2 ** 2))
         self.small_predictor_loss = YOLOLoss(
             version=3, anchor_boxes=small_predictor_config.anchor_boxes, use_cuda=self.use_cuda,
-            spec=small_predictor_config.spec, v3type='Small')
+            spec=small_predictor_config.spec, v3type=YOLOLoss.V3SMALL, downsample_ratio=downsample_ratio // (2 ** 3))
 
         self.backbone = self._create_backbone()
         self.predictor = self._select_predictor()
@@ -150,9 +152,9 @@ class YOLOv3(Module):
         return predictor
 
     def _register_yolo_predictors(self, predictor_container: Sequential):
-        large_predictor = self._create_yolov3_predictor(52, 1024, 'Large')
-        medium_predictor = self._create_yolov3_predictor(60, 512, 'Medium')
-        small_predictor = self._create_yolov3_predictor(68, 256, 'Small')
+        large_predictor = self._create_yolov3_predictor(52, 1024, YOLOLoss.V3LARGE)
+        medium_predictor = self._create_yolov3_predictor(60, 512, YOLOLoss.V3MEDIUM)
+        small_predictor = self._create_yolov3_predictor(68, 256, YOLOLoss.V3SMALL)
 
         predictor_container.add_module('large_predictor', large_predictor)
         predictor_container.add_module('medium_predictor', medium_predictor)
@@ -163,7 +165,7 @@ class YOLOv3(Module):
     def _create_yolov3_predictor(self, index, channels, type):
         predictor = Sequential()
         inner_channels = int(channels / 2)
-        is_not_large_predictor = type != 'Large'
+        is_not_large_predictor = type != YOLOLoss.V3LARGE
 
         if is_not_large_predictor:
             predictor.add_module(f'Conv{index}',
@@ -387,20 +389,20 @@ class YOLOv3(Module):
             self.small_predictions = None
         return loss
 
-    def cuda(self, device: Optional[Union[int, device]] = ...):
-        cuda_device = super().cuda(device)
+    def cuda(self, dev: Optional[Union[int, device]] = ...):
+        cuda_device = super().cuda(dev)
         self.use_cuda = True
         if not self._is_recognition:
-            self.large_predictor_loss.set_cuda(True)
-            self.medium_predictor_loss.set_cuda(True)
-            self.small_predictor_loss.set_cuda(True)
+            self.large_predictor_loss.cuda()
+            self.medium_predictor_loss.cuda()
+            self.small_predictor_loss.cuda()
         return cuda_device
 
     def cpu(self):
         cpu_device = super().cpu()
         self.use_cuda = False
         if not self._is_recognition:
-            self.large_predictor_loss.set_cuda(False)
-            self.medium_predictor_loss.set_cuda(False)
-            self.small_predictor_loss.set_cuda(False)
+            self.large_predictor_loss.cpu()
+            self.medium_predictor_loss.cpu()
+            self.small_predictor_loss.cpu()
         return cpu_device

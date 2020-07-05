@@ -1,7 +1,8 @@
 from math import log as math_log
+from typing import Optional, Union
 
 from torch import cuda, LongTensor, FloatTensor, zeros as torch_zeros, max as torch_max, reshape as torch_reshape, \
-    ones as torch_ones, linspace, Tensor, exp as torch_exp
+    ones as torch_ones, linspace, Tensor, exp as torch_exp, device
 from torch.nn import Module, MSELoss, CrossEntropyLoss, BCELoss
 from torch.nn.functional import sigmoid as torch_sigmoid
 
@@ -408,6 +409,16 @@ class YOLOv2Loss(Module):
         return predicted_center_x_values, predicted_center_y_values, predicted_width_values, predicted_height_values, \
                predicted_confidence_score_values, predicted_class_probability_values
 
+    def cuda(self, dev: Optional[Union[int, device]] = ...):
+        cuda_device = super().cuda(dev)
+        self.use_cuda = True
+        return cuda_device
+
+    def cpu(self):
+        cpu_device = super().cpu()
+        self.use_cuda = False
+        return cpu_device
+
 
 class YOLOv3Loss(Module):
     """YOLOv3 loss function, also known as ``[yolo]`` block in YOLOv3 config file.
@@ -418,12 +429,12 @@ class YOLOv3Loss(Module):
     credits to @CharlesPikachu and @marvis.
     """
 
-    def __init__(self, anchors, use_cuda, spec):
+    def __init__(self, anchors, downsample_ratio, use_cuda, spec):
         super().__init__()
 
         self.anchor_step = spec.anchor_step
         assert len(anchors) % spec.anchor_step == 0
-        self.anchors = anchors
+        self.anchors = [a / downsample_ratio for a in anchors]
         self.num_anchors = len(anchors) // self.anchor_step
 
         self.num_classes = spec.num_classes
@@ -789,6 +800,16 @@ class YOLOv3Loss(Module):
         return predicted_center_x_values, predicted_center_y_values, predicted_width_values, predicted_height_values, \
                predicted_confidence_score_values, predicted_class_probability_values
 
+    def cuda(self, dev: Optional[Union[int, device]] = ...):
+        cuda_device = super().cuda(dev)
+        self.use_cuda = True
+        return cuda_device
+
+    def cpu(self):
+        cpu_device = super().cpu()
+        self.use_cuda = False
+        return cpu_device
+
 
 class YOLOLoss(Module):
     """A module for easier YOLO loss function settings and selection.
@@ -809,10 +830,15 @@ class YOLOLoss(Module):
             use_cuda, the layer will raise error.
         spec: Specification of YOLO loss function. See more detail at YOLOLossSpecification class.
         v3type: Loss function type for YOLOv3 network. Useful for determining which anchor boxes configuration to
-            return as default anchor boxes, should the anchor_boxes parameter is not specified.
+            return as default anchor boxes, should the anchor_boxes parameter is not specified. Must be of either
+            YOLOLoss.V3LARGE, YOLOLoss.V3MEDIUM, or YOLOLoss.V3SMALL.
     """
+    V3LARGE = 'Large'
+    V3MEDIUM = 'Medium'
+    V3SMALL = 'Small'
 
-    def __init__(self, version: int, anchor_boxes: list, use_cuda: bool, spec: YOLOLossSpecification, v3type='Large'):
+    def __init__(self, version: int, anchor_boxes: list, use_cuda: bool, spec: YOLOLossSpecification, v3type=V3LARGE,
+                 downsample_ratio: int = None):
         super().__init__()
 
         assert version is not None
@@ -825,22 +851,38 @@ class YOLOLoss(Module):
         if version == 2:
             self.layer = YOLOv2Loss(self.anchor_boxes, use_cuda, spec)
         elif version == 3:
-            self.layer = YOLOv3Loss(self.anchor_boxes, use_cuda, spec)
+            assert downsample_ratio is not None
+            self.layer = YOLOv3Loss(self.anchor_boxes, downsample_ratio, use_cuda, spec)
 
     def __get_default_anchor_boxes(self, v3type):
         if self.version == 2:
             # Anchor boxes from yolov2-voc.cfg
             return [1.3221, 1.73145, 3.19275, 4.00944, 5.05587, 8.09892, 9.47112, 4.84053, 11.2364, 10.0071]
         elif self.version == 3:
-            if v3type == 'Large':
+            if v3type == self.V3LARGE:
                 return [10, 13, 16, 30, 33, 23]
-            elif v3type == 'Medium':
+            elif v3type == self.V3MEDIUM:
                 return [30, 61, 62, 45, 59, 119]
-            elif v3type == 'Small':
+            elif v3type == self.V3SMALL:
                 return [116, 90, 156, 198, 373, 326]
+
+    def set_anchors(self, anchors, downsample_ratio=None):
+        assert len(anchors) % self.layer.anchor_step == 0
+        self.layer.anchors = anchors if downsample_ratio is None else [a / downsample_ratio for a in anchors]
+        self.layer.num_anchors = len(anchors) // self.layer.anchor_step
 
     def set_cuda(self, use_cuda):
         self.layer.use_cuda = use_cuda
+
+    def cuda(self, dev: Optional[Union[int, device]] = ...):
+        cuda_device = super().cuda(dev)
+        self.layer.cuda()
+        return cuda_device
+
+    def cpu(self):
+        cpu_device = super().cpu()
+        self.layer.cpu()
+        return cpu_device
 
     def forward(self, predictions: Tensor, target: Tensor):
         return self.layer(predictions, target)

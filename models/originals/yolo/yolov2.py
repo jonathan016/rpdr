@@ -227,16 +227,16 @@ class YOLOv2(Module):
     def loss(self, target):
         return self.loss_function(self.predictions, target)
 
-    def cuda(self, device: Optional[Union[int, device]] = ...):
-        cuda_device = super().cuda(device)
+    def cuda(self, dev: Optional[Union[int, device]] = ...):
+        cuda_device = super().cuda(dev)
         self.use_cuda = True
         if not self._is_recognition:
-            self.loss_function.set_cuda(True)
+            self.loss_function.cuda()
         return cuda_device
 
     def cpu(self):
         cpu_device = super().cpu()
         self.use_cuda = False
         if not self._is_recognition:
-            self.loss_function.set_cuda(False)
+            self.loss_function.cpu()
         return cpu_device

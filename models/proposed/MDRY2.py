@@ -69,16 +69,15 @@ class MDRY2(Module):
             boxes will be generated per grid cell.
     """
 
-    # TODO Set anchor_boxes real values for all config
     def __init__(self, class_count: int = 120,
                  large_predictor_config: YOLOv3PredictorConfiguration = YOLOv3PredictorConfiguration(
-                     anchor_boxes=[10, 13, 16, 30, 33, 23],
+                     anchor_boxes=[19.56, 37.19, 35.13, 57.81, 52.90, 78.26],
                      spec=YOLOLossSpecification(version=3, num_classes=120, max_object=15, is_multilabel=False)),
                  medium_predictor_config: YOLOv3PredictorConfiguration = YOLOv3PredictorConfiguration(
-                     anchor_boxes=[30, 61, 62, 45, 59, 119],
+                     anchor_boxes=[59.87, 21.10, 84.39, 97.68, 95.15, 46.35],
                      spec=YOLOLossSpecification(version=3, num_classes=120, max_object=15, is_multilabel=False)),
                  small_predictor_config: YOLOv3PredictorConfiguration = YOLOv3PredictorConfiguration(
-                     anchor_boxes=[116, 90, 156, 198, 373, 326],
+                     anchor_boxes=[112.70, 158.04, 193.72, 86.14, 205.25, 247.73],
                      spec=YOLOLossSpecification(version=3, num_classes=120, max_object=15, is_multilabel=False)),
                  bounding_boxes_per_cell: int = 3):
         super().__init__()
@@ -89,15 +88,17 @@ class MDRY2(Module):
 
         self.use_cuda = False
 
+        num_backbone_sections = 6
+        downsample_ratio = 2 ** num_backbone_sections
         self.large_predictor_loss = YOLOLoss(
             version=3, anchor_boxes=large_predictor_config.anchor_boxes, use_cuda=self.use_cuda,
-            spec=large_predictor_config.spec, v3type='Large')
+            spec=large_predictor_config.spec, v3type=YOLOLoss.V3LARGE, downsample_ratio=downsample_ratio // (2 ** 1))
         self.medium_predictor_loss = YOLOLoss(
             version=3, anchor_boxes=medium_predictor_config.anchor_boxes, use_cuda=self.use_cuda,
-            spec=medium_predictor_config.spec, v3type='Medium')
+            spec=medium_predictor_config.spec, v3type=YOLOLoss.V3MEDIUM, downsample_ratio=downsample_ratio // (2 ** 2))
         self.small_predictor_loss = YOLOLoss(
             version=3, anchor_boxes=small_predictor_config.anchor_boxes, use_cuda=self.use_cuda,
-            spec=small_predictor_config.spec, v3type='Small')
+            spec=small_predictor_config.spec, v3type=YOLOLoss.V3SMALL, downsample_ratio=downsample_ratio // (2 ** 3))
 
         self.backbone = self._create_backbone()
         self.predictor = self._select_predictor()
@@ -164,9 +165,9 @@ class MDRY2(Module):
         return predictor
 
     def _register_yolo_predictors(self, predictor_container: Sequential):
-        large_predictor = self._create_yolov3_predictor(32, 1024, 'Large')
-        medium_predictor = self._create_yolov3_predictor(40, 512, 'Medium')
-        small_predictor = self._create_yolov3_predictor(48, 256, 'Small')
+        large_predictor = self._create_yolov3_predictor(32, 1024, YOLOLoss.V3LARGE)
+        medium_predictor = self._create_yolov3_predictor(40, 512, YOLOLoss.V3MEDIUM)
+        small_predictor = self._create_yolov3_predictor(48, 256, YOLOLoss.V3SMALL)
 
         predictor_container.add_module('large_predictor', large_predictor)
         predictor_container.add_module('medium_predictor', medium_predictor)
@@ -177,7 +178,7 @@ class MDRY2(Module):
     def _create_yolov3_predictor(self, index, channels, type):
         predictor = Sequential()
         inner_channels = int(channels / 2)
-        is_not_large_predictor = type != 'Large'
+        is_not_large_predictor = type != YOLOLoss.V3LARGE
 
         if is_not_large_predictor:
             predictor.add_module(f'Conv{index}',

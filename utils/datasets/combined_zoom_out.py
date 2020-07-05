@@ -1,15 +1,12 @@
 from typing import Any, Dict
 from warnings import warn
 
-from imgaug import seed as imgaug_seed
-from imgaug.augmentables.bbs import BoundingBox, BoundingBoxesOnImage
-from numpy import array as np_array
 from PIL import Image
 from random import randint, seed as rand_seed
 from torchvision.transforms import Resize, Compose, ColorJitter, Grayscale, Normalize
 
 
-def combine_PIL_images(identifiers, images, transform=None, min_resize=None, max_resize=None, random_seed=None):
+def _combine(identifiers, images, transform=None, min_resize=None, max_resize=None, random_seed=None):
     if random_seed:
         rand_seed(random_seed)
 
@@ -104,16 +101,15 @@ def _get_combined_image_size(images):
     return combined_image_size
 
 
-def combine_images_from_path(source_labels, transform=None, min_resize=None, max_resize=None, random_seed=None):
+def _combine_from_path(source_labels, transform=None, min_resize=None, max_resize=None, random_seed=None):
     images = [Image.open(path) for path in source_labels.values()]
     identifiers = [identifier for identifier in source_labels.keys()]
 
-    return combine_PIL_images(identifiers, images, transform, min_resize, max_resize, random_seed)
+    return _combine(identifiers, images, transform, min_resize, max_resize, random_seed)
 
 
 def combined_zoom_out(source: Dict[Any, str] = None, identifiers: list = None, images: list = None,
-                      individual_transform=None, min_resize: int = None, max_resize: int = None, random_seed: int =
-                      None, combined_transform=None, combined_seed: int = None):
+                      individual_transform=None, min_resize: int = None, max_resize: int = None, seed: int = None):
     """The proposed augmentation technique in this project's proposal. ``source`` is mutually exclusive to
     ``identifiers`` and ``images``, and vice versa.
 
@@ -130,10 +126,7 @@ def combined_zoom_out(source: Dict[Any, str] = None, identifiers: list = None, i
       changing transformation, set them on the ``combined_transform`` parameter.
     :param min_resize: Minimum resized image's width and/or height.
     :param max_resize: Maximum resized image's width and/or height.
-    :param random_seed: Seed for the randomized coordinate and image resizing value randomization.
-    :param combined_transform: Transformations to be applied for the combined image. Must be from ``imgaug`` to avoid
-      breaking since augmentation will be done to the created bounding boxes as well.
-    :param combined_seed: Seed for the augmentation on the combined image.
+    :param seed: Seed for the randomized coordinate and image resizing value randomization.
     :return: A tuple of combined image in RGB format and a coordinate dictionary, where the key is the specified
       identifiers and the value is a tuple of (left, upper, right, lower) coordinate of each image's bounding box in
       the combined image.
@@ -148,38 +141,20 @@ def combined_zoom_out(source: Dict[Any, str] = None, identifiers: list = None, i
 
     combined_image, bounding_boxes = None, None
     if source:
-        combined_image, bounding_boxes = combine_images_from_path(source, individual_transform, min_resize, max_resize,
-                                                                  random_seed)
+        combined_image, bounding_boxes = _combine_from_path(source, individual_transform, min_resize, max_resize, seed)
     elif identifiers and images:
         assert len(identifiers) == len(images)
-        combined_image, bounding_boxes = combine_PIL_images(identifiers, images, individual_transform, min_resize,
-                                                            max_resize, random_seed)
-
-    if combined_transform:
-        if combined_seed:
-            imgaug_seed(combined_seed)
-
-        combined_image = np_array(combined_image)
-        bounding_boxes = BoundingBoxesOnImage([
-            BoundingBox(*coordinates, label=identifier) for identifier, coordinates in bounding_boxes.items()
-        ], shape=combined_image.shape)
-
-        combined_image, bounding_boxes = combined_transform(image=combined_image, bounding_boxes=bounding_boxes)
-
-        combined_image = Image.fromarray(combined_image)
-        bounding_boxes = bounding_boxes.remove_out_of_image().clip_out_of_image()
-        bounding_boxes = {b.label: (b.x1_int, b.y1_int, b.x2_int, b.y2_int) for b in bounding_boxes}
+        combined_image, bounding_boxes = _combine(identifiers, images, individual_transform, min_resize, max_resize,
+                                                  seed)
 
     return combined_image, bounding_boxes
 
 
 def __check_for_color_changing_transform(individual_transform):
-    warning_message = 'Individual image transform should not contain color changing transformation(s).\nConsider ' \
-                      'putting color-changing transformation(s) in combined_transform instead.'
     color_changing_transformations = [ColorJitter, Grayscale, Normalize]
 
     if type(individual_transform) is Compose:
         if any([type(t) in color_changing_transformations for t in individual_transform.transforms]):
-            warn(warning_message)
+            warn('Individual image transform should not contain color changing transformation(s)')
     elif type(individual_transform) in color_changing_transformations:
-        warn(warning_message)
+        warn('Individual image transform should not contain color changing transformation(s)')

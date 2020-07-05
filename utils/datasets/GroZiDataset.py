@@ -4,7 +4,8 @@ from torchvision.datasets.folder import ImageFolder, default_loader
 from torchvision.transforms import ToTensor
 
 from utils.datasets import combined_zoom_out
-from utils.datasets.yolo_augmentation import augment_data
+from utils.datasets.yolo_augmentation import augment_data as yolo_transform
+from utils.datasets.ssd_augmentation import transform as ssd_transform
 
 
 class GroZiDetectionDataset(ImageFolder):
@@ -27,8 +28,6 @@ class GroZiDetectionDataset(ImageFolder):
             tensor or not.
         min_resize (int, optional): The minimum resize width/height of each individual product image.
         max_resize (int, optional): The maximum resize width/height of each individual product image.
-        combined_transform (callable, optional): Transformations from ``imgaug.augmenters`` module to be applied
-            to the combined image.
         max_data_usage (int, optional): Maximum individual product image usage in the combined zoom out augmentation
             technique.
         max_data_in_combined (int, optional): Maximum present individual product image in the combined image.
@@ -44,8 +43,8 @@ class GroZiDetectionDataset(ImageFolder):
 
     def __init__(self, root, model: str = SSD, transform=None, target_transform=None, loader=default_loader,
                  is_valid_file=None, transform_to_tensor: bool = True, min_resize: int = None, max_resize: int = None,
-                 combined_transform=None, max_data_usage: int = 1, max_data_in_combined: int = 1,
-                 max_object: int = None, seen_images: int = 0, batch_size: int = None):
+                 max_data_usage: int = 1, max_data_in_combined: int = 1, max_object: int = None, seen_images: int =
+                 0, batch_size: int = None):
         super().__init__(root, transform, target_transform, loader, is_valid_file)
 
         assert model == self.YOLO or model == self.SSD
@@ -63,8 +62,7 @@ class GroZiDetectionDataset(ImageFolder):
         self.kwargs = {
             'min_resize': min_resize,
             'max_resize': max_resize,
-            'individual_transform': self.transform,
-            'combined_transform': combined_transform
+            'individual_transform': self.transform
         }
 
         self.transform_to_tensor = transform_to_tensor
@@ -93,11 +91,14 @@ class GroZiDetectionDataset(ImageFolder):
 
         combined_image, bounding_boxes = combined_zoom_out(identifiers=index_labels, images=images, **self.kwargs)
 
+        labels = [label for _, label in bounding_boxes.keys()]
+        bounding_boxes = list(bounding_boxes.values())
+
         target = None
         if self.model == self.SSD:
-            target = self._format_ssd(bounding_boxes)
+            combined_image, *target = self._format_ssd(combined_image, labels, bounding_boxes)
         elif self.model == self.YOLO:
-            combined_image, target = self._format_yolo(combined_image, bounding_boxes)
+            combined_image, target = self._format_yolo(combined_image, labels, bounding_boxes)
 
         if self.transform_to_tensor:
             combined_image = ToTensor()(combined_image)
@@ -107,11 +108,9 @@ class GroZiDetectionDataset(ImageFolder):
         elif self.model == self.YOLO:
             return combined_image, target
 
-    def _format_yolo(self, combined_image, bounding_boxes):
-        labels = [label for _, label in bounding_boxes.keys()]
-        bounding_boxes = list(bounding_boxes.values())
-
+    def _format_yolo(self, combined_image, labels, bounding_boxes):
         assert len(labels) == len(bounding_boxes)
+
         yolo_labels = []
         for i in range(len(labels)):
             cx, cy, w, h = GroZiDetectionDataset._get_center_size_coordinates(bounding_boxes[i], combined_image.size)
@@ -119,7 +118,7 @@ class GroZiDetectionDataset(ImageFolder):
 
         shape = self._get_shape_for_multi_scale_training()
 
-        return augment_data(combined_image, self.max_object, yolo_labels, shape, .2, .1, 1.5, 1.5)
+        return yolo_transform(combined_image, self.max_object, yolo_labels, shape, .2, .1, 1.5, 1.5)
 
     def _get_shape_for_multi_scale_training(self):
         if self.seen_images < (4000 * self.batch_size):
@@ -148,11 +147,11 @@ class GroZiDetectionDataset(ImageFolder):
         return cx, cy, w, h
 
     @staticmethod
-    def _format_ssd(bounding_boxes):
-        labels = LongTensor([label for _, label in bounding_boxes.keys()])
-        bounding_boxes = FloatTensor(list(bounding_boxes.values()))
+    def _format_ssd(combined_image, labels, bounding_boxes):
+        labels = LongTensor(labels)
+        bounding_boxes = FloatTensor(bounding_boxes)
 
-        return bounding_boxes, labels
+        return ssd_transform(combined_image, bounding_boxes, labels)
 
     def __get_used_samples(self):
         indexes = rand_sample(range(0, len(self.samples)), randint(1, self.max_data_in_combined))
