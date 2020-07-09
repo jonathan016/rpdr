@@ -3,7 +3,7 @@ from typing import Optional, Union
 from torch import Tensor, device
 from torch.nn import Module, Sequential, Conv2d, BatchNorm2d, LeakyReLU, MaxPool2d, Upsample, CrossEntropyLoss
 
-from .RPYOLOv3 import YOLOv3PredictorConfiguration
+from .rpyolov3 import YOLOv3PredictorConfiguration
 from models import GlobalAvgPool2d, YOLOLossSpecification, YOLOLoss, ConcatenatingRoute, YOLOv3Block
 
 
@@ -71,13 +71,13 @@ class MDRY2(Module):
 
     def __init__(self, class_count: int = 120,
                  large_predictor_config: YOLOv3PredictorConfiguration = YOLOv3PredictorConfiguration(
-                     anchor_boxes=[19.56, 37.19, 35.13, 57.81, 52.90, 78.26],
+                     anchor_boxes=[112, 158, 193, 86, 205, 247],
                      spec=YOLOLossSpecification(version=3, num_classes=120, max_object=15, is_multilabel=False)),
                  medium_predictor_config: YOLOv3PredictorConfiguration = YOLOv3PredictorConfiguration(
-                     anchor_boxes=[59.87, 21.10, 84.39, 97.68, 95.15, 46.35],
+                     anchor_boxes=[59, 21, 84, 97, 95, 46],
                      spec=YOLOLossSpecification(version=3, num_classes=120, max_object=15, is_multilabel=False)),
                  small_predictor_config: YOLOv3PredictorConfiguration = YOLOv3PredictorConfiguration(
-                     anchor_boxes=[112.70, 158.04, 193.72, 86.14, 205.25, 247.73],
+                     anchor_boxes=[19, 37, 35, 57, 52, 78],
                      spec=YOLOLossSpecification(version=3, num_classes=120, max_object=15, is_multilabel=False)),
                  bounding_boxes_per_cell: int = 3):
         super().__init__()

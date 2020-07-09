@@ -1,7 +1,7 @@
 from math import log as math_log
 from typing import Optional, Union
 
-from torch import cuda, LongTensor, FloatTensor, zeros as torch_zeros, max as torch_max, reshape as torch_reshape, \
+from torch import LongTensor, FloatTensor, zeros as torch_zeros, max as torch_max, reshape as torch_reshape, \
     ones as torch_ones, linspace, Tensor, exp as torch_exp, device
 from torch.nn import Module, MSELoss, CrossEntropyLoss, BCELoss
 from torch.nn.functional import sigmoid as torch_sigmoid
@@ -59,8 +59,6 @@ class YOLOv2Loss(Module):
         self.num_classes = spec.num_classes
 
         self.use_cuda = use_cuda
-        self.long_tensor = cuda.LongTensor if use_cuda else LongTensor
-        self.float_tensor = cuda.FloatTensor if use_cuda else FloatTensor
 
         self.noobject_scale = spec.noobject_scale
         self.object_scale = spec.object_scale
@@ -118,16 +116,13 @@ class YOLOv2Loss(Module):
                                  intersection_over_union(True, predicted_bounding_boxes, ground_truth_bounding_boxes,
                                                          is_corner_coordinates=False))
             # https://github.com/marvis/pytorch-yolo2/issues/121#issuecomment-436388664
-            confidence_scores_1obj_1noobj[image_index][torch_reshape(ious, (self.num_anchors, feature_map_height,
-                                                                            feature_map_width)) >
-                                                       self.background_threshold] = 0
+            confidence_scores_1obj_1noobj[image_index][
+                torch_reshape(ious, (
+                    self.num_anchors, feature_map_height, feature_map_width)) > self.background_threshold] = 0
 
         target_center_x_values, target_center_y_values, target_height_values, target_width_values, \
-        coordinates_1obj = self._set_values_after_passing_anchor_box_learning_limit(target_center_x_values,
-                                                                                    target_center_y_values,
-                                                                                    target_height_values,
-                                                                                    target_width_values,
-                                                                                    coordinates_1obj)
+        coordinates_1obj = self._set_values_after_passing_anchor_box_learning_limit(
+            target_center_x_values, target_center_y_values, target_height_values, target_width_values, coordinates_1obj)
 
         num_ground_truths = 0
         correct_predictions = 0
@@ -152,9 +147,9 @@ class YOLOv2Loss(Module):
                                               is_corner_coordinates=False)
 
                 coordinates_1obj, confidence_scores_1obj_1noobj, class_probabilities_1obj = \
-                    self._update_1obj_and_1noobj_masks(anchor_index, image_index, class_probabilities_1obj,
-                                                       confidence_scores_1obj_1noobj, coordinates_1obj,
-                                                       ground_truth_center_x_pixel, ground_truth_center_y_pixel)
+                    self._update_1obj_and_1noobj_masks(
+                        anchor_index, image_index, class_probabilities_1obj, confidence_scores_1obj_1noobj,
+                        coordinates_1obj, ground_truth_center_x_pixel, ground_truth_center_y_pixel)
 
                 target_center_x_values, target_center_y_values, target_width_values, target_height_values, \
                 target_confidence_score_values, target_class_probability_values = self._update_target_values(
@@ -214,8 +209,7 @@ class YOLOv2Loss(Module):
     def _update_1obj_and_1noobj_masks(self, anchor_index, image_index, class_probabilities_1obj,
                                       confidence_scores_1obj_1noobj, coordinates_1obj, ground_truth_center_x_pixel,
                                       ground_truth_center_y_pixel):
-        coordinates_1obj[image_index][anchor_index][ground_truth_center_y_pixel][
-            ground_truth_center_x_pixel] = 1
+        coordinates_1obj[image_index][anchor_index][ground_truth_center_y_pixel][ground_truth_center_x_pixel] = 1
         confidence_scores_1obj_1noobj[image_index][anchor_index][ground_truth_center_y_pixel][
             ground_truth_center_x_pixel] = self.object_scale
         class_probabilities_1obj[image_index][anchor_index][ground_truth_center_y_pixel][
@@ -253,18 +247,21 @@ class YOLOv2Loss(Module):
             anchor_width = self.anchors[self.anchor_step * i]
             anchor_height = self.anchors[self.anchor_step * i + 1]
             anchor_box = [0, 0, anchor_width, anchor_height]
-            iou = intersection_over_union(False, anchor_box, ground_truth_bounding_box,
-                                          is_corner_coordinates=False)
+            iou = intersection_over_union(False, anchor_box, ground_truth_bounding_box, is_corner_coordinates=False)
+
             if iou > best_iou:
                 best_iou = iou
                 best_n = i
+
         return best_n, ground_truth_width, ground_truth_height
 
     def forward(self, predictions, target):
         batch_size = predictions.data.size(0)
-        self.seen_images += batch_size
         feature_map_height = predictions.data.size(2)
         feature_map_width = predictions.data.size(3)
+
+        if self.training:
+            self.seen_images += batch_size
 
         predicted_center_x_values, predicted_center_y_values, predicted_width_values, predicted_height_values, \
         predicted_confidence_score_values, predicted_class_probability_values = self._parse_predictions(
@@ -316,14 +313,14 @@ class YOLOv2Loss(Module):
         return self._calculate_loss(predicted, target, coordinates_1obj, confidence_scores_1obj_1noobj)
 
     def _calculate_loss(self, predicted, target, coordinates_1obj, confidence_scores_1obj_1noobj):
-        loss_x = self.coord_scale * MSELoss(reduction='sum')(predicted['x'] * coordinates_1obj,
-                                                             target['x'] * coordinates_1obj) / 2.0
-        loss_y = self.coord_scale * MSELoss(reduction='sum')(predicted['y'] * coordinates_1obj,
-                                                             target['y'] * coordinates_1obj) / 2.0
-        loss_w = self.coord_scale * MSELoss(reduction='sum')(predicted['w'] * coordinates_1obj,
-                                                             target['w'] * coordinates_1obj) / 2.0
-        loss_h = self.coord_scale * MSELoss(reduction='sum')(predicted['h'] * coordinates_1obj,
-                                                             target['h'] * coordinates_1obj) / 2.0
+        loss_x = self.coord_scale * MSELoss(reduction='sum')(
+            predicted['x'] * coordinates_1obj, target['x'] * coordinates_1obj) / 2.0
+        loss_y = self.coord_scale * MSELoss(reduction='sum')(
+            predicted['y'] * coordinates_1obj, target['y'] * coordinates_1obj) / 2.0
+        loss_w = self.coord_scale * MSELoss(reduction='sum')(
+            predicted['w'] * coordinates_1obj, target['w'] * coordinates_1obj) / 2.0
+        loss_h = self.coord_scale * MSELoss(reduction='sum')(
+            predicted['h'] * coordinates_1obj, target['h'] * coordinates_1obj) / 2.0
         coordinates_loss = loss_x + loss_y + loss_w + loss_h
 
         confidence_score_loss = MSELoss(reduction='sum')(
@@ -340,7 +337,8 @@ class YOLOv2Loss(Module):
     def _get_predicted_bounding_boxes(self, predicted_center_x_values, predicted_center_y_values,
                                       predicted_width_values, predicted_height_values, batch_size, feature_map_width,
                                       feature_map_height):
-        pred_boxes = self.float_tensor(4, batch_size * self.num_anchors * feature_map_height * feature_map_width)
+        pred_boxes = self._to_cuda(
+            FloatTensor(4, batch_size * self.num_anchors * feature_map_height * feature_map_width))
 
         grid_x = linspace(0, feature_map_width - 1, feature_map_width).repeat(feature_map_height, 1).repeat(
             batch_size * self.num_anchors, 1, 1)
@@ -350,27 +348,25 @@ class YOLOv2Loss(Module):
             batch_size * self.num_anchors, 1, 1)
         grid_y = self._to_cuda(grid_y.view(batch_size * self.num_anchors * feature_map_height * feature_map_width))
 
-        anchor_w = self._to_cuda(Tensor(self.anchors).view(self.num_anchors, 2).index_select(1, self.long_tensor([0])))
+        anchor_w = self._to_cuda(
+            Tensor(self.anchors).view(self.num_anchors, 2).index_select(1, self._to_cuda(LongTensor([0]))))
         anchor_w = anchor_w.repeat(batch_size, 1).repeat(1, 1, feature_map_height * feature_map_width)
         anchor_w = anchor_w.view(batch_size * self.num_anchors * feature_map_height * feature_map_width)
 
-        anchor_h = self._to_cuda(Tensor(self.anchors).view(self.num_anchors, 2).index_select(1, self.long_tensor([1])))
+        anchor_h = self._to_cuda(
+            Tensor(self.anchors).view(self.num_anchors, 2).index_select(1, self._to_cuda(LongTensor([1]))))
         anchor_h = anchor_h.repeat(batch_size, 1).repeat(1, 1, feature_map_height * feature_map_width)
         anchor_h = anchor_h.view(batch_size * self.num_anchors * feature_map_height * feature_map_width)
 
         # https://github.com/marvis/pytorch-yolo2/issues/131#issuecomment-460989919
-        pred_boxes[0] = torch_reshape(
-            predicted_center_x_values.data, (1, batch_size * self.num_anchors * feature_map_height *
-                                             feature_map_width)) + grid_x
-        pred_boxes[1] = torch_reshape(
-            predicted_center_y_values.data, (1, batch_size * self.num_anchors * feature_map_height *
-                                             feature_map_width)) + grid_y
-        pred_boxes[2] = torch_reshape(
-            torch_exp(predicted_width_values.data), (1, batch_size * self.num_anchors * feature_map_height *
-                                                     feature_map_width)) * anchor_w
-        pred_boxes[3] = torch_reshape(
-            torch_exp(predicted_height_values.data), (1, batch_size * self.num_anchors * feature_map_height *
-                                                      feature_map_width)) * anchor_h
+        pred_boxes[0] = torch_reshape(predicted_center_x_values.data, (
+            1, batch_size * self.num_anchors * feature_map_height * feature_map_width)) + grid_x
+        pred_boxes[1] = torch_reshape(predicted_center_y_values.data, (
+            1, batch_size * self.num_anchors * feature_map_height * feature_map_width)) + grid_y
+        pred_boxes[2] = torch_reshape(torch_exp(predicted_width_values.data), (
+            1, batch_size * self.num_anchors * feature_map_height * feature_map_width)) * anchor_w
+        pred_boxes[3] = torch_reshape(torch_exp(predicted_height_values.data), (
+            1, batch_size * self.num_anchors * feature_map_height * feature_map_width)) * anchor_h
 
         return self._convert_to_cpu(pred_boxes.transpose(0, 1).contiguous().view(-1, 4))
 
@@ -378,23 +374,23 @@ class YOLOv2Loss(Module):
         output = predictions.view(batch_size, self.num_anchors, (5 + self.num_classes), feature_map_height,
                                   feature_map_width)
 
-        predicted_center_x_values = output.index_select(2, self.long_tensor([0]))
+        predicted_center_x_values = output.index_select(2, self._to_cuda(LongTensor([0])))
         predicted_center_x_values = torch_sigmoid(
             predicted_center_x_values.view(batch_size, self.num_anchors, feature_map_height, feature_map_width))
 
-        predicted_center_y_values = output.index_select(2, self.long_tensor([1]))
+        predicted_center_y_values = output.index_select(2, self._to_cuda(LongTensor([1])))
         predicted_center_y_values = torch_sigmoid(
             predicted_center_y_values.view(batch_size, self.num_anchors, feature_map_height, feature_map_width))
 
-        predicted_width_values = output.index_select(2, self.long_tensor([2]))
+        predicted_width_values = output.index_select(2, self._to_cuda(LongTensor([2])))
         predicted_width_values = predicted_width_values.view(
             batch_size, self.num_anchors, feature_map_height, feature_map_width)
 
-        predicted_height_values = output.index_select(2, self.long_tensor([3]))
+        predicted_height_values = output.index_select(2, self._to_cuda(LongTensor([3])))
         predicted_height_values = predicted_height_values.view(batch_size, self.num_anchors, feature_map_height,
                                                                feature_map_width)
 
-        predicted_confidence_score_values = output.index_select(2, self.long_tensor([4]))
+        predicted_confidence_score_values = output.index_select(2, self._to_cuda(LongTensor([4])))
         predicted_confidence_score_values = torch_sigmoid(
             predicted_confidence_score_values.view(batch_size, self.num_anchors, feature_map_height, feature_map_width))
 
@@ -440,8 +436,6 @@ class YOLOv3Loss(Module):
         self.num_classes = spec.num_classes
 
         self.use_cuda = use_cuda
-        self.long_tensor = cuda.LongTensor if use_cuda else LongTensor
-        self.float_tensor = cuda.FloatTensor if use_cuda else FloatTensor
 
         self.noobject_scale = spec.noobject_scale
         self.object_scale = spec.object_scale
@@ -501,16 +495,13 @@ class YOLOv3Loss(Module):
                                  intersection_over_union(True, predicted_bounding_boxes, ground_truth_bounding_boxes,
                                                          is_corner_coordinates=False))
             # https://github.com/marvis/pytorch-yolo2/issues/121#issuecomment-436388664
-            confidence_scores_1obj_1noobj[image_index][torch_reshape(ious, (self.num_anchors, feature_map_height,
-                                                                            feature_map_width)) >
-                                                       self.background_threshold] = 0
+            confidence_scores_1obj_1noobj[image_index][
+                torch_reshape(ious, (self.num_anchors, feature_map_height, feature_map_width)) >
+                self.background_threshold] = 0
 
         target_center_x_values, target_center_y_values, target_height_values, target_width_values, \
-        coordinates_1obj = self._set_values_after_passing_anchor_box_learning_limit(target_center_x_values,
-                                                                                    target_center_y_values,
-                                                                                    target_height_values,
-                                                                                    target_width_values,
-                                                                                    coordinates_1obj)
+        coordinates_1obj = self._set_values_after_passing_anchor_box_learning_limit(
+            target_center_x_values, target_center_y_values, target_height_values, target_width_values, coordinates_1obj)
 
         num_ground_truths = 0
         correct_predictions = 0
@@ -535,9 +526,9 @@ class YOLOv3Loss(Module):
                                               is_corner_coordinates=False)
 
                 coordinates_1obj, confidence_scores_1obj_1noobj, class_probabilities_1obj = \
-                    self._update_1obj_and_1noobj_masks(anchor_index, image_index, class_probabilities_1obj,
-                                                       confidence_scores_1obj_1noobj, coordinates_1obj,
-                                                       ground_truth_center_x_pixel, ground_truth_center_y_pixel)
+                    self._update_1obj_and_1noobj_masks(
+                        anchor_index, image_index, class_probabilities_1obj, confidence_scores_1obj_1noobj,
+                        coordinates_1obj, ground_truth_center_x_pixel, ground_truth_center_y_pixel)
 
                 target_center_x_values, target_center_y_values, target_width_values, target_height_values, \
                 target_confidence_score_values, target_class_probability_values = self._update_target_values(
@@ -597,8 +588,7 @@ class YOLOv3Loss(Module):
     def _update_1obj_and_1noobj_masks(self, anchor_index, image_index, class_probabilities_1obj,
                                       confidence_scores_1obj_1noobj, coordinates_1obj, ground_truth_center_x_pixel,
                                       ground_truth_center_y_pixel):
-        coordinates_1obj[image_index][anchor_index][ground_truth_center_y_pixel][
-            ground_truth_center_x_pixel] = 1
+        coordinates_1obj[image_index][anchor_index][ground_truth_center_y_pixel][ground_truth_center_x_pixel] = 1
         confidence_scores_1obj_1noobj[image_index][anchor_index][ground_truth_center_y_pixel][
             ground_truth_center_x_pixel] = self.object_scale
         class_probabilities_1obj[image_index][anchor_index][ground_truth_center_y_pixel][
@@ -636,18 +626,21 @@ class YOLOv3Loss(Module):
             anchor_width = self.anchors[self.anchor_step * i]
             anchor_height = self.anchors[self.anchor_step * i + 1]
             anchor_box = [0, 0, anchor_width, anchor_height]
-            iou = intersection_over_union(False, anchor_box, ground_truth_bounding_box,
-                                          is_corner_coordinates=False)
+            iou = intersection_over_union(False, anchor_box, ground_truth_bounding_box, is_corner_coordinates=False)
+
             if iou > best_iou:
                 best_iou = iou
                 best_n = i
+
         return best_n, ground_truth_width, ground_truth_height
 
     def forward(self, predictions, target):
         batch_size = predictions.data.size(0)
-        self.seen_images += batch_size
         feature_map_height = predictions.data.size(2)
         feature_map_width = predictions.data.size(3)
+
+        if self.training:
+            self.seen_images += batch_size
 
         predicted_center_x_values, predicted_center_y_values, predicted_width_values, predicted_height_values, \
         predicted_confidence_score_values, predicted_class_probability_values = self._parse_predictions(
@@ -703,23 +696,25 @@ class YOLOv3Loss(Module):
         return self._calculate_loss(predicted, target, coordinates_1obj, confidence_scores_1obj_1noobj)
 
     def _calculate_loss(self, predicted, target, coordinates_1obj, confidence_scores_1obj_1noobj):
-        loss_x = self.coord_scale * MSELoss(reduction='sum')(predicted['x'] * coordinates_1obj,
-                                                             target['x'] * coordinates_1obj) / 2.0
-        loss_y = self.coord_scale * MSELoss(reduction='sum')(predicted['y'] * coordinates_1obj,
-                                                             target['y'] * coordinates_1obj) / 2.0
-        loss_w = self.coord_scale * MSELoss(reduction='sum')(predicted['w'] * coordinates_1obj,
-                                                             target['w'] * coordinates_1obj) / 2.0
-        loss_h = self.coord_scale * MSELoss(reduction='sum')(predicted['h'] * coordinates_1obj,
-                                                             target['h'] * coordinates_1obj) / 2.0
+        loss_x = self.coord_scale * MSELoss(reduction='sum')(
+            predicted['x'] * coordinates_1obj, target['x'] * coordinates_1obj) / 2.0
+        loss_y = self.coord_scale * MSELoss(reduction='sum')(
+            predicted['y'] * coordinates_1obj, target['y'] * coordinates_1obj) / 2.0
+        loss_w = self.coord_scale * MSELoss(reduction='sum')(
+            predicted['w'] * coordinates_1obj, target['w'] * coordinates_1obj) / 2.0
+        loss_h = self.coord_scale * MSELoss(reduction='sum')(
+            predicted['h'] * coordinates_1obj, target['h'] * coordinates_1obj) / 2.0
         coordinates_loss = loss_x + loss_y + loss_w + loss_h
 
         confidence_score_loss = MSELoss(reduction='sum')(
             predicted['C'] * confidence_scores_1obj_1noobj, target['C'] * confidence_scores_1obj_1noobj) / 2.0
 
         try:
-            class_probability_loss = BCELoss(reduction='sum')(predicted['p(c'], self._to_cuda(torch_zeros(
-                predicted['p(c'].shape).index_fill_(1, target['p(c'].data.cpu().long(), 1.0))) if self.is_multilabel \
-                else CrossEntropyLoss(reduction='sum')(predicted['p(c)'], target['p(c)'])
+            if self.is_multilabel:
+                class_probability_loss = BCELoss(reduction='sum')(predicted['p(c'], self._to_cuda(torch_zeros(
+                    predicted['p(c'].shape).index_fill_(1, target['p(c'].data.cpu().long(), 1.0)))
+            else:
+                class_probability_loss = CrossEntropyLoss(reduction='sum')(predicted['p(c)'], target['p(c)'])
             class_probability_loss = self.class_scale * class_probability_loss
         except:
             class_probability_loss = 0
@@ -731,7 +726,8 @@ class YOLOv3Loss(Module):
     def _get_predicted_bounding_boxes(self, predicted_center_x_values, predicted_center_y_values,
                                       predicted_width_values, predicted_height_values, batch_size, feature_map_width,
                                       feature_map_height):
-        pred_boxes = self.float_tensor(4, batch_size * self.num_anchors * feature_map_height * feature_map_width)
+        pred_boxes = self._to_cuda(
+            FloatTensor(4, batch_size * self.num_anchors * feature_map_height * feature_map_width))
 
         grid_x = linspace(0, feature_map_width - 1, feature_map_width).repeat(feature_map_height, 1).repeat(
             batch_size * self.num_anchors, 1, 1)
@@ -741,27 +737,25 @@ class YOLOv3Loss(Module):
             batch_size * self.num_anchors, 1, 1)
         grid_y = self._to_cuda(grid_y.view(batch_size * self.num_anchors * feature_map_height * feature_map_width))
 
-        anchor_w = self._to_cuda(Tensor(self.anchors).view(self.num_anchors, 2).index_select(1, self.long_tensor([0])))
+        anchor_w = self._to_cuda(
+            Tensor(self.anchors).view(self.num_anchors, 2).index_select(1, self._to_cuda(LongTensor([0]))))
         anchor_w = anchor_w.repeat(batch_size, 1).repeat(1, 1, feature_map_height * feature_map_width)
         anchor_w = anchor_w.view(batch_size * self.num_anchors * feature_map_height * feature_map_width)
 
-        anchor_h = self._to_cuda(Tensor(self.anchors).view(self.num_anchors, 2).index_select(1, self.long_tensor([1])))
+        anchor_h = self._to_cuda(
+            Tensor(self.anchors).view(self.num_anchors, 2).index_select(1, self._to_cuda(LongTensor([1]))))
         anchor_h = anchor_h.repeat(batch_size, 1).repeat(1, 1, feature_map_height * feature_map_width)
         anchor_h = anchor_h.view(batch_size * self.num_anchors * feature_map_height * feature_map_width)
 
         # https://github.com/marvis/pytorch-yolo2/issues/131#issuecomment-460989919
-        pred_boxes[0] = torch_reshape(
-            predicted_center_x_values.data, (1, batch_size * self.num_anchors * feature_map_height *
-                                             feature_map_width)) + grid_x
-        pred_boxes[1] = torch_reshape(
-            predicted_center_y_values.data, (1, batch_size * self.num_anchors * feature_map_height *
-                                             feature_map_width)) + grid_y
-        pred_boxes[2] = torch_reshape(
-            torch_exp(predicted_width_values.data), (1, batch_size * self.num_anchors * feature_map_height *
-                                                     feature_map_width)) * anchor_w
-        pred_boxes[3] = torch_reshape(
-            torch_exp(predicted_height_values.data), (1, batch_size * self.num_anchors * feature_map_height *
-                                                      feature_map_width)) * anchor_h
+        pred_boxes[0] = torch_reshape(predicted_center_x_values.data, (
+            1, batch_size * self.num_anchors * feature_map_height * feature_map_width)) + grid_x
+        pred_boxes[1] = torch_reshape(predicted_center_y_values.data, (
+            1, batch_size * self.num_anchors * feature_map_height * feature_map_width)) + grid_y
+        pred_boxes[2] = torch_reshape(torch_exp(predicted_width_values.data), (
+            1, batch_size * self.num_anchors * feature_map_height * feature_map_width)) * anchor_w
+        pred_boxes[3] = torch_reshape(torch_exp(predicted_height_values.data), (
+            1, batch_size * self.num_anchors * feature_map_height * feature_map_width)) * anchor_h
 
         return self._convert_to_cpu(pred_boxes.transpose(0, 1).contiguous().view(-1, 4))
 
@@ -769,23 +763,23 @@ class YOLOv3Loss(Module):
         output = predictions.view(batch_size, self.num_anchors, (5 + self.num_classes), feature_map_height,
                                   feature_map_width)
 
-        predicted_center_x_values = output.index_select(2, self.long_tensor([0]))
+        predicted_center_x_values = output.index_select(2, self._to_cuda(LongTensor([0])))
         predicted_center_x_values = torch_sigmoid(
             predicted_center_x_values.view(batch_size, self.num_anchors, feature_map_height, feature_map_width))
 
-        predicted_center_y_values = output.index_select(2, self.long_tensor([1]))
+        predicted_center_y_values = output.index_select(2, self._to_cuda(LongTensor([1])))
         predicted_center_y_values = torch_sigmoid(
             predicted_center_y_values.view(batch_size, self.num_anchors, feature_map_height, feature_map_width))
 
-        predicted_width_values = output.index_select(2, self.long_tensor([2]))
+        predicted_width_values = output.index_select(2, self._to_cuda(LongTensor([2])))
         predicted_width_values = predicted_width_values.view(
             batch_size, self.num_anchors, feature_map_height, feature_map_width)
 
-        predicted_height_values = output.index_select(2, self.long_tensor([3]))
+        predicted_height_values = output.index_select(2, self._to_cuda(LongTensor([3])))
         predicted_height_values = predicted_height_values.view(batch_size, self.num_anchors, feature_map_height,
                                                                feature_map_width)
 
-        predicted_confidence_score_values = output.index_select(2, self.long_tensor([4]))
+        predicted_confidence_score_values = output.index_select(2, self._to_cuda(LongTensor([4])))
         predicted_confidence_score_values = torch_sigmoid(
             predicted_confidence_score_values.view(batch_size, self.num_anchors, feature_map_height, feature_map_width))
 
@@ -873,6 +867,9 @@ class YOLOLoss(Module):
 
     def set_cuda(self, use_cuda):
         self.layer.use_cuda = use_cuda
+
+    def set_seen_images(self, seen_images):
+        self.layer.seen_images = seen_images
 
     def cuda(self, dev: Optional[Union[int, device]] = ...):
         cuda_device = super().cuda(dev)

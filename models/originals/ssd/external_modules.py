@@ -1,5 +1,5 @@
 from torch import arange as torch_arange, cat as torch_cat, exp as torch_exp, max as torch_max, min as torch_min, \
-    clamp as torch_clamp
+    clamp as torch_clamp, load as torch_load
 from torch.nn import Module, Conv2d, MaxPool2d, functional as F
 from torch.nn.init import xavier_uniform_ as torch_nn_xavier_uniform, constant_ as torch_nn_constant
 from torchvision.models import vgg16 as torchvision_vgg16
@@ -116,7 +116,7 @@ class VGGBase(Module):
         self.conv6 = Conv2d(512, 1024, kernel_size=3, padding=6, dilation=6)
         self.conv7 = Conv2d(1024, 1024, kernel_size=1)
 
-        if load_pretrained: self._load_pretrained_layers()
+        if load_pretrained is not False: self._load_pretrained_layers(load_pretrained)
 
     def forward(self, image):
         out = F.relu(self.conv1_1(image))
@@ -149,11 +149,11 @@ class VGGBase(Module):
 
         return conv4_3_features, conv7_features
 
-    def _load_pretrained_layers(self):
+    def _load_pretrained_layers(self, load_pretrained):
         state_dict = self.state_dict()
         param_names = list(state_dict.keys())
 
-        pretrained_state_dict = torchvision_vgg16(pretrained=True).state_dict()
+        pretrained_state_dict = self._load_pretrained_base(load_pretrained)
         pretrained_param_names = list(pretrained_state_dict.keys())
 
         for i, param in enumerate(param_names[:-4]):
@@ -170,6 +170,12 @@ class VGGBase(Module):
         state_dict['conv7.bias'] = _decimate(conv_fc7_bias, m=[4])
 
         self.load_state_dict(state_dict)
+
+    def _load_pretrained_base(self, load_pretrained):
+        if type(load_pretrained) == bool:
+            return torchvision_vgg16(pretrained=load_pretrained).state_dict()
+        else:
+            return torch_load(load_pretrained)
 
 
 class AuxiliaryConvolutions(Module):

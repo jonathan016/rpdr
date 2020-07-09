@@ -389,6 +389,20 @@ class YOLOv3(Module):
             self.small_predictions = None
         return loss
 
+    def eval(self):
+        ev = super().eval()
+        self.large_predictor_loss.eval()
+        self.medium_predictor_loss.eval()
+        self.small_predictor_loss.eval()
+        return ev
+
+    def train(self, mode: bool = True):
+        tr = super().train(mode)
+        self.large_predictor_loss.train(mode)
+        self.medium_predictor_loss.train(mode)
+        self.small_predictor_loss.train(mode)
+        return tr
+
     def cuda(self, dev: Optional[Union[int, device]] = ...):
         cuda_device = super().cuda(dev)
         self.use_cuda = True

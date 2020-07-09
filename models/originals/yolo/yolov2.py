@@ -227,6 +227,16 @@ class YOLOv2(Module):
     def loss(self, target):
         return self.loss_function(self.predictions, target)
 
+    def eval(self):
+        ev = super().eval()
+        self.loss_function.eval()
+        return ev
+
+    def train(self, mode: bool = True):
+        tr = super().train(mode)
+        self.loss_function.train(mode)
+        return tr
+
     def cuda(self, dev: Optional[Union[int, device]] = ...):
         cuda_device = super().cuda(dev)
         self.use_cuda = True
