@@ -1,4 +1,4 @@
-from torch import Tensor, min as torch_min, max as torch_max
+from torch import Tensor, min as torch_min, max as torch_max, sort as torch_sort
 from torch.nn import Module
 from torch.nn.functional import avg_pool2d as torch_avg_pool2d
 
@@ -147,3 +147,22 @@ def _bbox_iou(box1, box2, is_corner_coordinates=True):
     union = box1_area + box2_area - intersection
 
     return intersection / union
+
+
+def nms(boxes, nms_thresh):
+    total_boxes = len(boxes)
+    if total_boxes == 0:
+        return boxes
+
+    _, sort_ids = torch_sort(Tensor([1 - boxes[i][4] for i in range(total_boxes)]))
+    out_boxes = []
+    for i in range(total_boxes):
+        box_i = boxes[sort_ids[i]]
+        if box_i[4]:
+            out_boxes.append(box_i)
+            for j in range(i + 1, total_boxes):
+                box_j = boxes[sort_ids[j]]
+                if _bbox_iou(box_i, box_j, is_corner_coordinates=False) > nms_thresh:
+                    box_j[4] = 0
+
+    return out_boxes

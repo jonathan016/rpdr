@@ -1,3 +1,5 @@
+from typing import Optional, Union
+
 from torch import LongTensor, device as torch_device, zeros as torch_zeros, float as torch_float, long as torch_long, \
     cat as torch_cat, log as torch_log
 from torch.nn import Module, L1Loss, CrossEntropyLoss
@@ -17,14 +19,17 @@ class MultiBoxLoss(Module):
 
         self.is_cuda = False
 
-        self.priors_cxcy = priors_cxcy
-        self.priors_xy = cxcy_to_xy(priors_cxcy)
+        self.set_priors(priors_cxcy)
         self.threshold = threshold
         self.neg_pos_ratio = neg_pos_ratio
         self.alpha = alpha
 
         self.smooth_l1 = L1Loss()
         self.cross_entropy = CrossEntropyLoss(reduction='none')
+
+    def set_priors(self, priors_cxcy):
+        self.priors_cxcy = priors_cxcy
+        self.priors_xy = cxcy_to_xy(priors_cxcy)
 
     def _get_device(self):
         return torch_device("cuda" if self.is_cuda else "cpu")
@@ -53,12 +58,12 @@ class MultiBoxLoss(Module):
             overlap_for_each_prior[prior_for_each_object] = 1.
 
             label_for_each_prior = labels[i][object_for_each_prior]
-            label_for_each_prior[overlap_for_each_prior < self.threshold] = 0
+            label_for_each_prior[overlap_for_each_prior < self.threshold] = 120
 
             ground_truth_classes[i] = label_for_each_prior
             ground_truth_locations[i] = cxcy_to_gcxgcy(xy_to_cxcy(boxes[i][object_for_each_prior]), self.priors_cxcy)
 
-        positive_priors = ground_truth_classes != 0
+        positive_priors = ground_truth_classes != 120
 
         localization_loss = self.smooth_l1(
             predicted_locations[positive_priors], ground_truth_locations[positive_priors])
@@ -80,6 +85,14 @@ class MultiBoxLoss(Module):
         confidence_loss = (conf_loss_hard_neg.sum() + conf_loss_pos.sum()) / n_positives.sum().float()
 
         return confidence_loss + self.alpha * localization_loss
+
+    def cuda(self, dev: Optional[Union[int, torch_device]] = ...):
+        self.set_cuda(True)
+        return super().cuda(dev)
+
+    def cpu(self):
+        self.set_cuda(False)
+        return super().cpu()
 
 
 def xy_to_cxcy(xy):

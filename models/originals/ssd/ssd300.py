@@ -1,8 +1,10 @@
+from math import sqrt as math_sqrt
+from typing import Optional, Union
+
 from torch import FloatTensor, LongTensor, device as torch_device, cat as torch_cat, zeros as torch_zeros, \
-    max as torch_max, uint8 as torch_uint8
+    max as torch_max, uint8 as torch_uint8, BoolTensor
 from torch.nn import Module, Parameter, functional as F
 from torch.nn.init import constant_ as torch_nn_constant
-from math import sqrt as math_sqrt
 
 from .external_modules import cxcy_to_xy, gcxgcy_to_cxcy, find_jaccard_overlap, VGGBase, AuxiliaryConvolutions, \
     PredictionConvolutions
@@ -53,7 +55,8 @@ class SSD300(Module):
         self.rescale_factors = Parameter(FloatTensor(1, 512, 1, 1))
         torch_nn_constant(self.rescale_factors, 20)
 
-        self.priors_cxcy = self.create_prior_boxes(aspect_ratios.value())
+        self.aspect_ratios = aspect_ratios.value()
+        self.priors_cxcy = self.create_prior_boxes(self.aspect_ratios)
 
         self.predicted_locations = None
         self.predicted_classes_scores = None
@@ -62,8 +65,14 @@ class SSD300(Module):
     def _get_device(self):
         return torch_device("cuda" if self.is_cuda else "cpu")
 
+    def _to_cuda(self, obj):
+        if self.is_cuda:
+            return obj.cuda()
+        return obj
+
     def set_cuda(self, is_cuda: bool = False):
         self.is_cuda = is_cuda
+        self.loss_function.set_cuda(is_cuda)
 
     def forward(self, image):
         conv4_3_feats, conv7_feats = self._base_predict(image)
@@ -118,7 +127,7 @@ class SSD300(Module):
                                 additional_scale = 1.
                             prior_boxes.append([cx, cy, additional_scale, additional_scale])
 
-        prior_boxes = FloatTensor(prior_boxes).to(self._get_device())
+        prior_boxes = self._to_cuda(FloatTensor(prior_boxes))
         prior_boxes.clamp_(0, 1)
 
         return prior_boxes
@@ -130,7 +139,8 @@ class SSD300(Module):
         return self.loss_function(
             self.predicted_locations, self.predicted_classes_scores, target_locations, target_classes_scores)
 
-    def detect_objects(self, predicted_locs, predicted_scores, min_score, max_overlap, top_k):
+    def detect_objects(self, image_as_tensor, min_score, max_overlap, top_k):
+        predicted_locs, predicted_scores = self.forward(image_as_tensor)
         batch_size = predicted_locs.size(0)
         n_priors = self.priors_cxcy.size(0)
         predicted_scores = F.softmax(predicted_scores, dim=2)
@@ -148,13 +158,12 @@ class SSD300(Module):
             image_labels = list()
             image_scores = list()
 
-            # max_scores, best_label = predicted_scores[i].max(dim=1)
-
-            for c in range(1, self.num_classes):
+            for c in range(self.num_classes - 1):
                 class_scores = predicted_scores[i][:, c]
                 score_above_min_score = class_scores > min_score
                 n_above_min_score = score_above_min_score.sum().item()
-                if n_above_min_score == 0: continue
+                if n_above_min_score == 0:
+                    continue
                 class_scores = class_scores[score_above_min_score]
                 class_decoded_locs = decoded_locs[score_above_min_score]
 
@@ -163,25 +172,30 @@ class SSD300(Module):
 
                 overlap = find_jaccard_overlap(class_decoded_locs, class_decoded_locs)
 
-                suppress = torch_zeros((n_above_min_score), dtype=torch_uint8).to(self._get_device())
+                suppress = self._to_cuda(torch_zeros((n_above_min_score), dtype=torch_uint8))
                 for box in range(class_decoded_locs.size(0)):
-                    if suppress[box] == 1: continue
+                    if suppress[box] == 1:
+                        continue
 
-                    suppress = torch_max(suppress, overlap[box] > max_overlap)
+                    suppress = torch_max(suppress, (overlap[box] > max_overlap).type(torch_uint8))
                     suppress[box] = 0
 
-                image_boxes.append(class_decoded_locs[1 - suppress])
-                image_labels.append(LongTensor((1 - suppress).sum().item() * [c]).to(self._get_device()))
-                image_scores.append(class_scores[1 - suppress])
+                kept_indices = self._to_cuda(suppress.type(BoolTensor).logical_not())
+                locs = class_decoded_locs[kept_indices].tolist()
+                for loc_index, loc in enumerate(locs):
+                    locs[loc_index] = [max(loc[0], 0.), max(loc[1], 0.), min(loc[2], 1.), min(loc[3], 1.)]
+                image_boxes.append(self._to_cuda(FloatTensor(locs)))
+                image_labels.append(self._to_cuda(LongTensor(kept_indices.sum().item() * [c])))
+                image_scores.append(self._to_cuda(class_scores[kept_indices]))
 
             if len(image_boxes) == 0:
-                image_boxes.append(FloatTensor([[0., 0., 1., 1.]]).to(self._get_device()))
-                image_labels.append(LongTensor([0]).to(self._get_device()))
-                image_scores.append(FloatTensor([0.]).to(self._get_device()))
+                image_boxes.append(self._to_cuda(FloatTensor([[0., 0., 0., 0.]])))
+                image_labels.append(self._to_cuda(LongTensor([120])))
+                image_scores.append(self._to_cuda(FloatTensor([0.])))
 
-            image_boxes = torch_cat(image_boxes, dim=0)
-            image_labels = torch_cat(image_labels, dim=0)
-            image_scores = torch_cat(image_scores, dim=0)
+            image_boxes = self._to_cuda(torch_cat(image_boxes, dim=0))
+            image_labels = self._to_cuda(torch_cat(image_labels, dim=0))
+            image_scores = self._to_cuda(torch_cat(image_scores, dim=0))
             n_objects = image_scores.size(0)
 
             if n_objects > top_k:
@@ -195,3 +209,17 @@ class SSD300(Module):
             all_images_scores.append(image_scores)
 
         return all_images_boxes, all_images_labels, all_images_scores
+
+    def cuda(self, dev: Optional[Union[int, torch_device]] = None):
+        self.set_cuda(True)
+        self.loss_function.cuda(dev)
+        self.priors_cxcy = self.create_prior_boxes(self.aspect_ratios).cuda(dev)
+        self.loss_function.set_priors(self.priors_cxcy)
+        return super().cuda(dev)
+
+    def cpu(self):
+        self.set_cuda(False)
+        self.loss_function.cpu()
+        self.priors_cxcy = self.priors_cxcy.cpu()
+        self.loss_function.set_priors(self.priors_cxcy)
+        return super().cpu()

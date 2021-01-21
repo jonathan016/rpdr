@@ -1,3 +1,5 @@
+from collections import OrderedDict
+
 from torch import arange as torch_arange, cat as torch_cat, exp as torch_exp, max as torch_max, min as torch_min, \
     clamp as torch_clamp, load as torch_load
 from torch.nn import Module, Conv2d, MaxPool2d, functional as F
@@ -174,6 +176,8 @@ class VGGBase(Module):
     def _load_pretrained_base(self, load_pretrained):
         if type(load_pretrained) == bool:
             return torchvision_vgg16(pretrained=load_pretrained).state_dict()
+        elif type(load_pretrained) == OrderedDict:
+            return load_pretrained
         else:
             return torch_load(load_pretrained)
 

@@ -1,9 +1,10 @@
 from typing import Optional, Union
 
-from torch import Tensor, device
-from torch.nn import Module, Sequential, Conv2d, BatchNorm2d, LeakyReLU, MaxPool2d, CrossEntropyLoss
+from torch import Tensor, LongTensor, device, exp as torch_exp, sigmoid as torch_sigmoid, linspace as torch_linspace, \
+    max as torch_max
+from torch.nn import Module, Sequential, Conv2d, BatchNorm2d, LeakyReLU, MaxPool2d, CrossEntropyLoss, Softmax
 
-from .external_modules import Identity, GlobalAvgPool2d
+from .external_modules import Identity, GlobalAvgPool2d, nms
 from .internal_modules import DetectionAdditionalLayers
 from .loss_modules import YOLOLossSpecification, YOLOLoss
 
@@ -191,6 +192,11 @@ class YOLOv2(Module):
 
         self.predictor = self._select_predictor()
 
+        if self.use_cuda:
+            self.predictor.cuda()
+        else:
+            self.predictor.cpu()
+
     def detecting(self):
         self.recognizing(False)
 
@@ -224,8 +230,16 @@ class YOLOv2(Module):
     def is_recognizing(self):
         return self._is_recognition
 
-    def loss(self, target):
-        return self.loss_function(self.predictions, target)
+    def loss(self, target, divide_by_mask=False, class_loss_reduction='mean', location_confidence_loss_reduction='sum'):
+        if self._is_recognition:
+            return self.loss_function(self.predictions, target)
+
+        kwargs = {
+            'divide_by_mask': divide_by_mask,
+            'class_loss_reduction': class_loss_reduction,
+            'location_confidence_loss_reduction': location_confidence_loss_reduction
+        }
+        return self.loss_function(self.predictions, target, **kwargs)
 
     def eval(self):
         ev = super().eval()
@@ -237,11 +251,13 @@ class YOLOv2(Module):
         self.loss_function.train(mode)
         return tr
 
-    def cuda(self, dev: Optional[Union[int, device]] = ...):
+    def cuda(self, dev: Optional[Union[int, device]] = None):
         cuda_device = super().cuda(dev)
         self.use_cuda = True
         if not self._is_recognition:
             self.loss_function.cuda()
+        self.backbone.cuda()
+        self.predictor.cuda()
         return cuda_device
 
     def cpu(self):
@@ -249,4 +265,104 @@ class YOLOv2(Module):
         self.use_cuda = False
         if not self._is_recognition:
             self.loss_function.cpu()
+        self.backbone.cpu()
+        self.predictor.cpu()
         return cpu_device
+
+    def detect_objects(self, image_as_tensor, confidence_threshold, nms_threshold):
+        self.forward(image_as_tensor)
+
+        yolov2_loss = self.loss_function.layer
+        num_anchors = yolov2_loss.num_anchors
+
+        if self.predictions.dim() == 3:
+            self.predictions = self.predictions.unsqueeze(0)
+
+        assert self.predictions.size(1) == (5 + self.class_count) * num_anchors
+
+        batch_size = self.predictions.size(0)
+        feature_map_height = self.predictions.size(2)
+        feature_map_width = self.predictions.size(3)
+        number_of_pixels = feature_map_height * feature_map_width
+        view_size = batch_size * num_anchors * number_of_pixels
+
+        output = self.predictions.view(batch_size * num_anchors, 5 + self.class_count, number_of_pixels).transpose(
+            0, 1).contiguous().view(5 + self.class_count, view_size)
+        output = output.cuda() if self.use_cuda else output
+
+        grid_x = torch_linspace(0, feature_map_width - 1, feature_map_width).repeat(feature_map_height, 1).repeat(
+            batch_size * num_anchors, 1, 1).view(view_size)
+        grid_x = grid_x.cuda() if self.use_cuda else grid_x
+
+        grid_y = torch_linspace(0, feature_map_height - 1, feature_map_height).repeat(
+            feature_map_width, 1).t().repeat(batch_size * num_anchors, 1, 1).view(view_size)
+        grid_y = grid_y.cuda() if self.use_cuda else grid_y
+
+        anchor_w = Tensor(yolov2_loss.anchors).view(num_anchors, yolov2_loss.anchor_step).index_select(
+            1, LongTensor([0])).repeat(batch_size, 1).repeat(1, 1, number_of_pixels).view(view_size)
+        anchor_w = anchor_w.cuda() if self.use_cuda else anchor_w
+
+        anchor_h = Tensor(yolov2_loss.anchors).view(num_anchors, yolov2_loss.anchor_step).index_select(
+            1, LongTensor([1])).repeat(batch_size, 1).repeat(1, 1, number_of_pixels).view(view_size)
+        anchor_h = anchor_h.cuda() if self.use_cuda else anchor_h
+
+        class_scores = Softmax()(output[5:5 + self.class_count].transpose(0, 1)).data
+        max_class_scores, top_classes = torch_max(class_scores, 1)
+
+        objectness_confidences = torch_sigmoid(output[4])
+        max_class_scores = max_class_scores.view(-1)
+        top_classes = top_classes.view(-1)
+
+        confidences = objectness_confidences * max_class_scores
+        objectness_confidences = objectness_confidences[confidences > confidence_threshold]
+        x_predictions = (torch_sigmoid(output[0]) + grid_x)[confidences > confidence_threshold] / feature_map_width
+        y_predictions = (torch_sigmoid(output[1]) + grid_y)[confidences > confidence_threshold] / feature_map_height
+        w_predictions = (torch_exp(output[2]) * anchor_w)[confidences > confidence_threshold] / feature_map_width
+        h_predictions = (torch_exp(output[3]) * anchor_h)[confidences > confidence_threshold] / feature_map_height
+        class_scores = class_scores[confidences > confidence_threshold].view(-1, self.class_count)
+        max_class_scores = max_class_scores[confidences > confidence_threshold]
+        top_classes = top_classes[confidences > confidence_threshold]
+
+        all_boxes = []
+        for b_index in range(batch_size):
+            boxes = []
+            for index in range(x_predictions.size(0)):
+                objectness = objectness_confidences[index].item()
+                cx = x_predictions[index].item()
+                cy = y_predictions[index].item()
+                w = w_predictions[index].item()
+                h = h_predictions[index].item()
+                max_class_score = max_class_scores[index].item()
+                top_class = top_classes[index].item()
+
+                box = [cx, cy, w, h, objectness, max_class_score, top_class]
+
+                possible_classes = (class_scores[index] * objectness > confidence_threshold).nonzero()[:, 0]
+                possible_classes = possible_classes[possible_classes != top_class]
+
+                for cls in possible_classes:
+                    box.append(class_scores[index][cls].item())
+                    box.append(cls.item())
+                boxes.append(box)
+            all_boxes.append(boxes)
+
+        detections = []
+        image_width, image_height = image_as_tensor.size(3), image_as_tensor.size(2)
+        for b_index in range(batch_size):
+            batch_detections = []
+            boxes = nms(all_boxes[b_index], nms_threshold)
+            for box in boxes:
+                x1 = max(box[0] - box[2] / 2.0, 0) * image_width
+                y1 = max(box[1] - box[3] / 2.0, 0) * image_height
+                x2 = min(box[0] + box[2] / 2.0, 1) * image_width
+                y2 = min(box[1] + box[3] / 2.0, 1) * image_height
+                objectness = box[4]
+
+                for j in range((len(box) - 5) // 2):
+                    cls_conf = box[5 + 2 * j]
+                    cls_id = box[6 + 2 * j]
+                    prob = objectness * cls_conf
+                    batch_detections.append([cls_id, prob, x1, y1, x2, y2])
+            detections.append(batch_detections)
+
+        return detections

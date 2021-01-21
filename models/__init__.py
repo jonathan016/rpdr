@@ -1,2 +1,2 @@
-from .originals import *
-from .proposed import *
+from models.originals import *
+from models.proposed import *
